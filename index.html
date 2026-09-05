@@ -597,6 +597,82 @@ BOB.renderMap = function(regionKey, dominantType){
 };
 
 /* ================= UI (Tasks 12-13) ================= */
+BOB.state = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+BOB._num = (v,fb)=>{ const n=parseFloat(v); return isFinite(n)?n:fb; };
+
+BOB.buildInputs = function(){
+  const R=BOB.RANGES;
+  const rows = BOB.LEVELS.map(l=>{
+    const v=BOB.state.levels[l.key];
+    const cell=(f,val)=>`<input data-lvl="${l.key}" data-f="${f}" type="number" `
+      +`min="${R[f].min}" max="${R[f].max}" step="${R[f].step}" value="${val}" `
+      +`style="width:64px;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:4px;padding:3px">`;
+    return `<tr><td style="color:var(--ink2)">${l.label}</td>`
+      +`<td>${cell('t',v.t)}</td><td>${cell('p',v.p)}</td><td>${cell('ws',v.ws)}</td><td>${cell('wd',v.wd)}</td></tr>`;
+  }).join('');
+  const soil = BOB.SOIL.map(s=>{
+    const val=BOB.state.soil[s.key];
+    return `<label style="display:inline-block;margin:2px 8px 2px 0">${s.label} `
+      +`<input data-soil="${s.key}" type="number" min="${R.soil.min}" max="${R.soil.max}" value="${val}" `
+      +`style="width:56px;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:4px;padding:3px"></label>`;
+  }).join('');
+  const regionOpts = BOB.REGIONS.map(r=>`<option value="${r.key}" ${r.key===BOB.state.region?'selected':''}>${r.name}</option>`).join('');
+  return `
+    <h2 class="sec">Atmospheric column</h2>
+    <table style="border-collapse:collapse;font-size:12px">
+      <tr style="color:var(--head)"><td></td><td>°F</td><td>mb</td><td>kt</td><td>dir</td></tr>
+      ${rows}
+    </table>
+    <h2 class="sec">Soil temperature (°F)</h2>
+    <div>${soil}</div>
+    <h2 class="sec">Moisture</h2>
+    <input id="moisture" type="range" min="0" max="100" value="${BOB.state.moisture}" style="width:100%">
+    <div style="color:var(--ink2);font-size:12px">Bone dry ⟷ Gulf-juiced (<span id="moistval">${BOB.state.moisture}</span>)</div>
+    <h2 class="sec">Region</h2>
+    <select id="region" style="width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:6px">${regionOpts}</select>
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button id="randomize">🎲 Randomize</button>
+      <button id="reset">Reset</button>
+    </div>`;
+};
+
+// Read current DOM inputs back into BOB.state. Returns the state.
+BOB.readInputs = function(root){
+  root = root || document;
+  root.querySelectorAll('input[data-lvl]').forEach(inp=>{
+    const lvl=inp.getAttribute('data-lvl'), f=inp.getAttribute('data-f');
+    BOB.state.levels[lvl][f]=BOB._num(inp.value, BOB.state.levels[lvl][f]);
+  });
+  root.querySelectorAll('input[data-soil]').forEach(inp=>{
+    BOB.state.soil[inp.getAttribute('data-soil')]=BOB._num(inp.value, 32);
+  });
+  const m=root.querySelector('#moisture'); if(m) BOB.state.moisture=BOB._num(m.value,65);
+  const rg=root.querySelector('#region'); if(rg) BOB.state.region=rg.value;
+  return BOB.state;
+};
+
+BOB.randomColumn = function(){
+  const rnd=(a,b)=>a+Math.random()*(b-a);
+  const sfc=rnd(-10,90);
+  const lvls={}; let t=sfc, p=1010;
+  BOB.LEVELS.forEach((l,i)=>{ if(i>0){ t-=rnd(6,22); p-=rnd(120,200);} lvls[l.key]={t:Math.round(t),p:Math.round(p),ws:Math.round(rnd(5,40)+i*rnd(3,14)),wd:Math.round(rnd(140,300))}; });
+  const soilBase=sfc+rnd(-4,8);
+  return { levels:lvls, soil:{skin:Math.round(soilBase),d2:Math.round(soilBase+2),d4:Math.round(soilBase+4),d8:Math.round(soilBase+6),d20:Math.round(soilBase+9)},
+           moisture:Math.round(rnd(0,100)), region:BOB.REGIONS[Math.floor(Math.random()*BOB.REGIONS.length)].key };
+};
+
+window.__bobTests.push((t) => {
+  t('buildInputs emits column table + region select', (function(){
+    const html=BOB.buildInputs();
+    return html.indexOf('Atmospheric column')>=0 && html.indexOf('id="region"')>=0 &&
+           (html.match(/data-lvl=/g)||[]).length===24; // 6 levels x 4 fields
+  })());
+  t('randomColumn well-formed', (function(){
+    const c=BOB.randomColumn();
+    return c.levels.eye && typeof c.levels.eye.t==='number' && c.soil.skin!=null &&
+           BOB.REGIONS.some(r=>r.key===c.region);
+  })());
+});
 
 /* ================= SELF-TEST HARNESS ================= */
 (function(){
