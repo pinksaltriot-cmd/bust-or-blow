@@ -224,10 +224,18 @@ BOB._pw = function(col){
   const warmth = BOB._clamp01((col.levels.eye.t + 10)/90); // colder air holds less
   return (col.moisture/100) * (0.3 + 2.2*warmth);
 };
+// Surface-low strength proxy. The raw 1013-p deficit is unbounded over the input range
+// (p can be set to 100 mb), so it saturates: linear to 40 mb of deficit — the range real
+// extratropical lows live in, and where the tuning below is calibrated — then
+// exponentially approaching a 75 mb ceiling. The shear contribution saturates too.
+BOB.WIND_DEFICIT_LINEAR = 40;   // mb of deficit treated 1:1
+BOB.WIND_DEFICIT_EXTRA  = 35;   // additional mb available asymptotically
+BOB.WIND_SHEAR_CAP      = 120;  // kt of bulk shear beyond which no extra credit
 BOB._windPot = function(col){
-  // deficit below standard 1013 mb + a shear contribution
   const deficit = Math.max(0, 1013 - col.levels.eye.p);
-  return deficit + 0.15*BOB._bulkShear(col);
+  const L = BOB.WIND_DEFICIT_LINEAR, E = BOB.WIND_DEFICIT_EXTRA;
+  const sat = deficit <= L ? deficit : L + E*(1 - Math.exp(-(deficit-L)/E));
+  return sat + 0.15*Math.min(BOB._bulkShear(col), BOB.WIND_SHEAR_CAP);
 };
 BOB._soilFreeze = function(col){
   const vals = BOB.SOIL.map(s=>col.soil[s.key]);
@@ -433,6 +441,11 @@ window.__bobTests.push((t) => {
   // severe uses EF-style, coldoutbreak uses a cold tier
   t('severe scale', BOB.severityFor('severe', 4, 'splains').scale==='EF');
   t('cold scale', !!BOB.severityFor('coldoutbreak', -20, 'nplains').tier);
+  // region-normalized: the same snowfall is a bigger anomaly where snow is rare
+  t('severity index is region-aware',
+     BOB.severityFor('snowstorm',12,'gulf').index > BOB.severityFor('snowstorm',12,'umidw').index);
+  t('severity tiers stay absolute',
+     BOB.severityFor('snowstorm',12,'gulf').tier === BOB.severityFor('snowstorm',12,'umidw').tier);
 });
 
 window.__bobTests.push((t) => {
@@ -579,35 +592,50 @@ BOB._tier = function(value, pairs, maxRef){
   const index = Math.max(0, Math.min(100, Math.round(100*value/maxRef)));
   return { index, tier };
 };
+// Which region-climatology weight normalizes each event type's index.
+BOB.SEVERITY_CLIM_KEY = {snowstorm:'snow', blizzard:'snow', icestorm:'ice', rainflood:'rain',
+  severe:'severe', highwind:'wind', coldoutbreak:'cold'};
+// Region normalizer for the index. Like the real RSI, the index is normalized against what
+// the region is used to: 12" is a far bigger deal on the Gulf Coast than in the Upper
+// Midwest. Impact TIERS stay absolute (12" of snow does the same thing anywhere); only the
+// normalized index moves with climatology.
+BOB._climFactor = function(type, regionKey){
+  const region = BOB.REGIONS.find(r=>r.key===regionKey);
+  const key = BOB.SEVERITY_CLIM_KEY[type];
+  const f = (region && key) ? region.clim[key] : 1;
+  return (typeof f==='number' && f>0) ? f : 1;
+};
 BOB.severityFor = function(type, value, regionKey){
+  const cf = BOB._climFactor(type, regionKey);
   switch(type){
     case 'snowstorm':
     case 'blizzard': {
-      const {index,tier}=BOB._tier(value, [[0,'Nuisance'],[2,'Minor'],[6,'Notable'],[12,'Major'],[24,'Crippling'],[40,'Historic']], 48);
+      const {index,tier}=BOB._tier(value, [[0,'Nuisance'],[2,'Minor'],[6,'Notable'],[12,'Major'],[24,'Crippling'],[40,'Historic']], 48*cf);
       return { scale:'RSI-style', index, tier };
     }
     case 'icestorm': {
-      const {index,tier}=BOB._tier(value, [[0,'Glaze'],[0.1,'Minor'],[0.25,'Damaging'],[0.5,'Crippling'],[1.0,'Catastrophic']], 1.5);
+      const {index,tier}=BOB._tier(value, [[0,'Glaze'],[0.1,'Minor'],[0.25,'Damaging'],[0.5,'Crippling'],[1.0,'Catastrophic']], 1.5*cf);
       return { scale:'Ice', index, tier };
     }
     case 'rainflood': {
-      const {index,tier}=BOB._tier(value, [[0,'Light'],[1,'Soaking'],[3,'Heavy'],[6,'Flooding'],[10,'Catastrophic']], 15);
+      const {index,tier}=BOB._tier(value, [[0,'Light'],[1,'Soaking'],[3,'Heavy'],[6,'Flooding'],[10,'Catastrophic']], 15*cf);
       return { scale:'Rain', index, tier };
     }
     case 'severe': {
       const tiers=['EF0','EF1','EF2','EF3','EF4','EF5'];
       const ef=Math.max(0,Math.min(5,Math.round(value)));
-      return { scale:'EF', index:Math.round(100*ef/5), tier:tiers[ef] };
+      const index=Math.max(0,Math.min(100,Math.round(100*ef/(5*cf))));
+      return { scale:'EF', index, tier:tiers[ef] };
     }
     case 'highwind': {
-      const {index,tier}=BOB._tier(value, [[0,'Breezy'],[35,'Windy'],[50,'High Wind'],[65,'Damaging'],[85,'Extreme']], 120);
+      const {index,tier}=BOB._tier(value, [[0,'Breezy'],[35,'Windy'],[50,'High Wind'],[65,'Damaging'],[85,'Extreme']], 120*cf);
       return { scale:'Wind', index, tier };
     }
     case 'coldoutbreak': {
       // colder = more severe; invert
       const pairs=[[100,'Chilly'],[32,'Cold'],[10,'Hard Freeze'],[-5,'Arctic'],[-25,'Life-threatening']];
       let tier='Chilly'; for(const [thr,label] of pairs){ if(value<=thr) tier=label; }
-      const index=Math.max(0,Math.min(100,Math.round(100*(40-value)/80)));
+      const index=Math.max(0,Math.min(100,Math.round(100*(40-value)/(80*cf))));
       return { scale:'Cold', index, tier };
     }
     default: return { scale:'', index:0, tier:'' };
