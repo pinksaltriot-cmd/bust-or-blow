@@ -564,6 +564,24 @@ BOB.simulate = function(col){
   return { col, diag, cls, fc, env, region };
 };
 
+// Non-blocking notes about physically odd columns (sandbox allows them).
+BOB.warnings = function(col){
+  const w=[]; const L=col.levels;
+  for(let i=1;i<BOB.LEVELS.length;i++){
+    const a=BOB.LEVELS[i-1].key, b=BOB.LEVELS[i].key;
+    if (L[b].p >= L[a].p) w.push(`Pressure not decreasing with height (${BOB.LEVELS[i].label}).`);
+  }
+  if (L.eye.t < L.l40.t) w.push('Surface colder than 40k ft — deeply inverted column.');
+  return w;
+};
+
+window.__bobTests.push((t) => {
+  const bad=JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  bad.levels.l40.p = 900; // higher than levels below -> warning
+  t('warns on pressure inversion', BOB.warnings(bad).some(m=>/Pressure/.test(m)));
+  t('clean default no pressure warning', !BOB.warnings(BOB.DEFAULT_COLUMN).some(m=>/Pressure/.test(m)));
+});
+
 /* ================= MAP (Task 11) ================= */
 window.__bobTests.push((t) => {
   const svg = BOB.renderMap('splains', 'severe');
@@ -704,7 +722,10 @@ BOB.renderReport = function(sim, sliderPos){
     <h2 class="sec">Region &amp; footprint</h2>
     ${BOB.renderMap(col.region, fc.type)}
     <h2 class="sec">Narrative</h2>
-    <p style="max-width:640px">${BOB.narrative(col, diag, cls, fc, res)}</p>`;
+    <p style="max-width:640px">${BOB.narrative(col, diag, cls, fc, res)}</p>
+    ${(function(){ const w=BOB.warnings(col); return w.length
+        ? `<div style="margin-top:10px;padding:8px 10px;border:1px solid var(--severe);border-radius:6px;color:var(--severe);font-size:12px">⚠ ${w.join(' ')}</div>`
+        : ''; })()}`;
 };
 
 BOB.sliderPos = 0;
