@@ -510,17 +510,18 @@ BOB.forecast = function(col, diag, cls){
     case 'blizzard': {
       // snow ratio grows as it gets colder (dendritic), soil that's frozen keeps it
       const ratio = 8 + 6*BOB._clamp01((32-col.levels.eye.t)/30);      // 8:1 .. 14:1
-      const keep  = 0.5 + 0.5*BOB._clamp01((34-col.soil.skin)/14);     // warm ground melts
+      const surfKeep = 0.5 + 0.5*BOB._clamp01((34-col.soil.skin)/14);  // warm skin melts
+      const keep = surfKeep * (1 - 0.3*diag.groundWarmth);             // warm deep soil melts from below
       const val = pw * ratio * keep;
-      return { type, unit:'in', value:+val.toFixed(1), label:'Snowfall' };
+      return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Snowfall' };
     }
     case 'icestorm': {
       const val = pw * 0.35 * (col.soil.skin<=30?1:0.6);
-      return { type, unit:'in', value:+val.toFixed(2), label:'Ice accretion' };
+      return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Ice accretion' };
     }
     case 'rainflood': {
       const val = pw * 1.6;
-      return { type, unit:'in', value:+val.toFixed(2), label:'Rainfall' };
+      return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Rainfall' };
     }
     case 'severe': {
       // same atmospheric ceiling as the classifier: no instability + moisture, no tornado
@@ -532,11 +533,11 @@ BOB.forecast = function(col, diag, cls){
     }
     case 'highwind': {
       const val = 20 + diag.windPot*0.9;
-      return { type, unit:'kt', value:Math.round(val), label:'Peak gust' };
+      return { type, unit:'kt', value:BOB._roundFor(type,'kt',val), label:'Peak gust' };
     }
     case 'coldoutbreak': {
       const val = col.levels.eye.t - 6*diag.soilFreeze;
-      return { type, unit:'°F', value:Math.round(val), label:'Low temperature' };
+      return { type, unit:'°F', value:BOB._roundFor(type,'°F',val), label:'Low temperature' };
     }
     default:
       return { type, unit:'', value:0, label:'Event' };
@@ -577,9 +578,7 @@ BOB._piecewise = function(pct, lo, mid, hi){
 BOB.resolve = function(fc, diag, sliderPos){
   const stop = BOB.SLIDER_STOPS.find(s=>s.pos===sliderPos) || BOB.SLIDER_STOPS[3];
   const env = BOB.envelope(fc, diag);
-  let actual = env.at(stop.pct);
-  actual = (fc.unit==='°F'||fc.unit==='EF') ? +actual.toFixed(1)
-         : (fc.unit==='kt') ? Math.round(actual) : +actual.toFixed(2);
+  const actual = BOB._roundFor(fc.type, fc.unit, env.at(stop.pct));
   return { actual, pct:stop.pct, stop, env };
 };
 
