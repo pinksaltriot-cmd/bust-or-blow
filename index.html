@@ -186,7 +186,11 @@ BOB._warmNose = function(prof){
   for (const p of prof){ if (p.ft>0 && p.ft<=12000 && p.t>32) return true; }
   return false;
 };
-BOB._precipType = function(prof, soilSkin){
+// pw (precipitable-water proxy, in) gates whether there is anything to fall at all:
+// a moisture-starved column produces 'none', not a 0.0-in snowstorm.
+BOB.PW_PRECIP_MIN = 0.10;
+BOB._precipType = function(prof, soilSkin, pw){
+  if (pw != null && pw < BOB.PW_PRECIP_MIN) return 'none';
   const sfc = prof[0].t;
   const warmNose = BOB._warmNose(prof);
   if (warmNose){
@@ -248,14 +252,23 @@ BOB._marginality = function(col, precipType){
   const inst = BOB._instability(col);
   const instMarg = 1 - Math.abs(inst-0.5)*2;               // mid instability = uncertain
   const mixMarg = (precipType==='mix'||precipType==='sleet'||precipType==='zr') ? 0.3 : 0;
-  return BOB._clamp01(0.45*thermMarg + 0.35*instMarg + 0.2 + mixMarg - 0.2);
+  return BOB._clamp01(0.45*thermMarg + 0.35*instMarg + mixMarg);
+};
+// The atmosphere's ceiling on deep convection: shear organizes a storm but cannot create
+// one. Continuous in both instability and moisture, so a loaded column is unaffected (1)
+// while a dry or stable column is scaled toward 0 — no updraft, no outbreak.
+BOB.CONV_INST_FULL = 0.30;  // instability at which the gate opens fully
+BOB.CONV_PW_FULL   = 0.80;  // pw (in) at which the gate opens fully
+BOB._convectiveGate = function(diag){
+  return BOB._clamp01(diag.instability/BOB.CONV_INST_FULL)
+       * BOB._clamp01(diag.pw/BOB.CONV_PW_FULL);
 };
 
 BOB.diagnose = function(col){
   const prof = BOB._profile(col);
   const freezingLevelFt = BOB._freezingLevelFt(prof);
   const warmNose = BOB._warmNose(prof);
-  const precipType = BOB._precipType(prof, col.soil.skin);
+  const precipType = BOB._precipType(prof, col.soil.skin, BOB._pw(col));
   const lapseRate = BOB._lapseRate(col);
   const bulkShearKt = BOB._bulkShear(col);
   const dirShearDeg = BOB._dirShear(col);
@@ -406,19 +419,32 @@ BOB.classify = function(diag, regionKey){
   const veryCold = BOB._clamp01((10 - diag.prof[0].t)/40);
   const snowy = (diag.precipType==='snow') ? 1 : (diag.precipType==='mix'?0.4:0);
   const lowWind = BOB._clamp01((diag.windPot-20)/60);
+  const convGate = BOB._convectiveGate(diag);
+  const shearN = BOB._clamp01(diag.bulkShearKt/70);
+  const dirN = BOB._clamp01(diag.dirShearDeg/90);   // veering with height favors rotation
   const s = {};
   s.snowstorm  = cl.snow  * (0.55*snowy + 0.6*BOB._clamp01(diag.pw/1.5) + 0.35*cold);
   s.blizzard   = cl.snow  * cl.wind * (snowy>0?1:0) * (0.6*BOB._clamp01(diag.pw/1.2) + 0.8*lowWind + 0.4*cold);
   s.icestorm   = cl.ice   * (diag.warmNose?1:0) * (0.8 + 0.5*BOB._clamp01(diag.pw/1.2));
   s.rainflood  = cl.rain  * ((diag.precipType==='rain'||diag.precipType==='zr')?1:0.2) * (0.9*BOB._clamp01(diag.pw/2.0));
-  s.severe     = cl.severe* (0.7*diag.instability + 0.5*BOB._clamp01(diag.bulkShearKt/70) + 0.3*BOB._clamp01(diag.pw/1.8));
-  s.highwind   = cl.wind  * (0.9*lowWind + 0.3*BOB._clamp01(diag.bulkShearKt/70));
+  // gated: shear and directional shear only count once there is instability and moisture
+  s.severe     = cl.severe* convGate * (0.55*diag.instability + 0.40*shearN + 0.20*dirN
+                                        + 0.25*BOB._clamp01(diag.pw/1.8));
+  s.highwind   = cl.wind  * (0.9*lowWind + 0.3*shearN);
   s.coldoutbreak = cl.cold* (0.9*veryCold + 0.4*(1-BOB._clamp01(diag.pw/1.0)));
   // pick dominant, then secondary
   const ordered = Object.keys(s).sort((a,b)=>s[b]-s[a]);
   return { dominant: ordered[0], secondary: (s[ordered[1]]>0.35*s[ordered[0]] ? ordered[1] : null), scores:s };
 };
 
+// Single rounding rule per (event type, unit), shared by forecast() and resolve() so the
+// report card never reads "8.0 in → 11.07 in". Ice accretion is the one quantity that
+// genuinely needs hundredths; everything else in inches is reported in tenths.
+BOB._roundFor = function(type, unit, v){
+  if (unit === 'kt') return Math.round(v);
+  if (type === 'icestorm') return +v.toFixed(2);
+  return +v.toFixed(1);   // in, °F, EF
+};
 BOB.forecast = function(col, diag, cls){
   const type = cls.dominant;
   const pw = diag.pw;
@@ -440,8 +466,12 @@ BOB.forecast = function(col, diag, cls){
       return { type, unit:'in', value:+val.toFixed(2), label:'Rainfall' };
     }
     case 'severe': {
-      const val = 5 * BOB._clamp01(0.6*diag.instability + 0.4*BOB._clamp01(diag.bulkShearKt/70));
-      return { type, unit:'EF', value:+val.toFixed(1), label:'Tornado potential (EF)' };
+      // same atmospheric ceiling as the classifier: no instability + moisture, no tornado
+      const val = 5 * BOB._convectiveGate(diag)
+                * BOB._clamp01(0.5*diag.instability
+                             + 0.3*BOB._clamp01(diag.bulkShearKt/70)
+                             + 0.2*BOB._clamp01(diag.dirShearDeg/90));
+      return { type, unit:'EF', value:BOB._roundFor(type,'EF',val), label:'Tornado potential (EF)' };
     }
     case 'highwind': {
       const val = 20 + diag.windPot*0.9;
