@@ -391,6 +391,13 @@ window.__bobTests.push((t) => {
   t('bust narrative names bust', /bust/i.test(BOB.narrative(c,d,cls,fc,res2)));
 });
 
+window.__bobTests.push((t) => {
+  const sim = BOB.simulate(BOB.DEFAULT_COLUMN);
+  t('simulate returns diag/cls/fc/env', sim.diag && sim.cls && sim.fc && sim.env && sim.region);
+  t('env.at is a function', typeof sim.env.at==='function');
+  t('deterministic', JSON.stringify(BOB.simulate(BOB.DEFAULT_COLUMN).fc)===JSON.stringify(sim.fc));
+});
+
 BOB.EVENT_TYPES = ['snowstorm','blizzard','icestorm','rainflood','severe','highwind','coldoutbreak'];
 BOB.classify = function(diag, regionKey){
   const region = BOB.REGIONS.find(r=>r.key===regionKey) || {clim:{snow:1,ice:1,rain:1,severe:1,wind:1,cold:1}};
@@ -546,6 +553,15 @@ BOB.narrative = function(col, diag, cls, fc, res){
   if (diag.marginality>0.6) s += `The setup was marginal, so the envelope was wide — this outcome was well within reach. `;
   else s += `The setup was robust, so outcomes clustered near the forecast. `;
   return s.trim();
+};
+
+BOB.simulate = function(col){
+  const diag = BOB.diagnose(col);
+  const cls  = BOB.classify(diag, col.region);
+  const fc   = BOB.forecast(col, diag, cls);
+  const env  = BOB.envelope(fc, diag);
+  const region = BOB.REGIONS.find(r=>r.key===col.region) || null;
+  return { col, diag, cls, fc, env, region };
 };
 
 /* ================= MAP (Task 11) ================= */
