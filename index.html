@@ -565,6 +565,37 @@ BOB.simulate = function(col){
 };
 
 /* ================= MAP (Task 11) ================= */
+window.__bobTests.push((t) => {
+  const svg = BOB.renderMap('splains', 'severe');
+  t('map returns svg string', typeof svg==='string' && svg.indexOf('<svg')===0);
+  t('map marks selected region', svg.indexOf('data-region="splains"')>=0);
+  t('map has 14 region nodes', (svg.match(/data-region=/g)||[]).length===14);
+});
+
+BOB.TYPE_COLORS = {snowstorm:'--snow', blizzard:'--snow', icestorm:'--ice',
+  rainflood:'--rain', severe:'--severe', highwind:'--wind', coldoutbreak:'--cold'};
+BOB.renderMap = function(regionKey, dominantType){
+  const w=1000, h=620;
+  const hi = getComputedStyle(document.documentElement).getPropertyValue(BOB.TYPE_COLORS[dominantType]||'--accent').trim() || '#4f9cf9';
+  // stylized lower-48 blob
+  const outline = 'M120,120 C220,70 420,70 620,90 C760,100 900,120 940,180 '
+    + 'C980,240 900,300 860,340 C820,380 840,460 760,500 C640,540 520,520 440,500 '
+    + 'C360,480 300,460 240,420 C160,380 120,320 100,260 C88,210 90,150 120,120 Z';
+  let nodes='';
+  BOB.REGIONS.forEach(r=>{
+    const sel = r.key===regionKey;
+    const fill = sel ? hi : '#1b3a5b';
+    const rad = sel ? 15 : 8;
+    nodes += `<g data-region="${r.key}">`
+      + `<circle cx="${r.cx}" cy="${r.cy}" r="${rad}" fill="${fill}" stroke="#0a2137" stroke-width="2"/>`
+      + (sel?`<circle cx="${r.cx}" cy="${r.cy}" r="26" fill="none" stroke="${hi}" stroke-width="2" opacity="0.6"/>`:'')
+      + `</g>`;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:640px">`
+    + `<path d="${outline}" fill="#0d2135" stroke="#2a4f74" stroke-width="2"/>`
+    + nodes + `</svg>`;
+};
+
 /* ================= UI (Tasks 12-13) ================= */
 
 /* ================= SELF-TEST HARNESS ================= */
