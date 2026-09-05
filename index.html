@@ -51,7 +51,89 @@ window.__bobTests = window.__bobTests || [];
 /* ================= CONSTANTS (Task 1) ================= */
 window.__bobTests.push((t) => {
   t('harness alive', 1 + 1 === 2);
+  t('6 levels in order', BOB.LEVELS.length===6 &&
+     BOB.LEVELS.map(l=>l.ftAlt).join(',')==='0,5000,10000,18000,30000,40000');
+  t('5 soil depths', BOB.SOIL.length===5 &&
+     BOB.SOIL.map(s=>s.inches).join(',')==='0,2,4,8,20');
+  t('14 regions with clim', BOB.REGIONS.length===14 &&
+     BOB.REGIONS.every(r=>r.key && r.name && r.clim &&
+       typeof r.clim.snow==='number' && typeof r.clim.severe==='number'));
+  t('7 slider stops, monotonic pct', (function(){
+     const s=BOB.SLIDER_STOPS; if(s.length!==7) return false;
+     for(let i=1;i<s.length;i++) if(s[i].pct<=s[i-1].pct) return false;
+     return s[0].pos===-3 && s[3].pos===0 && s[3].pct===0.5 && s[6].pos===3;
+  })());
+  t('default column valid', (function(){
+     const c=BOB.DEFAULT_COLUMN;
+     return c && c.levels && c.levels.eye && typeof c.levels.eye.t==='number' &&
+       c.soil && typeof c.soil.skin==='number' &&
+       typeof c.moisture==='number' && typeof c.region==='string' &&
+       BOB.REGIONS.some(r=>r.key===c.region);
+  })());
 });
+
+BOB.LEVELS = [
+  {key:'eye', label:'Eye level', ftAlt:0},
+  {key:'l5',  label:'5,000 ft',  ftAlt:5000},
+  {key:'l10', label:'10,000 ft', ftAlt:10000},
+  {key:'l18', label:'18,000 ft', ftAlt:18000},
+  {key:'l30', label:'30,000 ft', ftAlt:30000},
+  {key:'l40', label:'40,000 ft', ftAlt:40000},
+];
+BOB.SOIL = [
+  {key:'skin', label:'Surface', inches:0},
+  {key:'d2',   label:'2 in',    inches:2},
+  {key:'d4',   label:'4 in',    inches:4},
+  {key:'d8',   label:'8 in',    inches:8},
+  {key:'d20',  label:'20 in',   inches:20},
+];
+// clim: per-event-type propensity multipliers (1 = neutral). cx,cy = SVG map coords (0-1000 x, 0-620 y).
+BOB.REGIONS = [
+  {key:'pnw',    name:'Pacific Northwest',   cx:120, cy:110, clim:{snow:1.0, ice:0.7, rain:1.6, severe:0.5, wind:1.3, cold:0.9}},
+  {key:'cawest', name:'California / West Coast', cx:95, cy:300, clim:{snow:0.6, ice:0.4, rain:1.4, severe:0.5, wind:1.1, cold:0.6}},
+  {key:'swdes',  name:'Desert Southwest',    cx:250, cy:360, clim:{snow:0.5, ice:0.4, rain:0.7, severe:1.0, wind:1.1, cold:0.7}},
+  {key:'nrock',  name:'Northern Rockies',    cx:330, cy:150, clim:{snow:1.4, ice:0.7, rain:0.7, severe:0.7, wind:1.2, cold:1.4}},
+  {key:'srock',  name:'Southern Rockies',    cx:360, cy:300, clim:{snow:1.2, ice:0.7, rain:0.7, severe:0.9, wind:1.2, cold:1.1}},
+  {key:'nplains',name:'Northern Plains',     cx:500, cy:150, clim:{snow:1.3, ice:1.0, rain:0.9, severe:1.2, wind:1.4, cold:1.5}},
+  {key:'splains',name:'Southern Plains',     cx:520, cy:360, clim:{snow:0.8, ice:1.2, rain:1.0, severe:1.6, wind:1.3, cold:0.9}},
+  {key:'umidw',  name:'Upper Midwest',       cx:600, cy:150, clim:{snow:1.4, ice:1.1, rain:1.0, severe:1.1, wind:1.2, cold:1.5}},
+  {key:'glakes', name:'Great Lakes',         cx:670, cy:180, clim:{snow:1.5, ice:1.1, rain:1.0, severe:1.0, wind:1.1, cold:1.3}},
+  {key:'ohval',  name:'Ohio Valley',         cx:680, cy:290, clim:{snow:1.0, ice:1.2, rain:1.2, severe:1.2, wind:1.0, cold:1.0}},
+  {key:'matl',   name:'Mid-Atlantic',        cx:790, cy:300, clim:{snow:1.0, ice:1.1, rain:1.2, severe:1.0, wind:1.0, cold:0.9}},
+  {key:'ne',     name:'Northeast / New England', cx:850, cy:190, clim:{snow:1.4, ice:1.1, rain:1.1, severe:0.8, wind:1.2, cold:1.2}},
+  {key:'se',     name:'Southeast',           cx:760, cy:400, clim:{snow:0.5, ice:0.9, rain:1.3, severe:1.3, wind:1.1, cold:0.7}},
+  {key:'gulf',   name:'Gulf Coast',          cx:640, cy:470, clim:{snow:0.3, ice:0.6, rain:1.5, severe:1.4, wind:1.3, cold:0.6}},
+];
+BOB.SLIDER_STOPS = [
+  {pos:-3, key:'bigbust', label:'Big Bust',      pct:0.05},
+  {pos:-2, key:'bust',    label:'Bust',          pct:0.15},
+  {pos:-1, key:'modbust', label:'Moderate Bust', pct:0.30},
+  {pos: 0, key:'bull',    label:'Bullseye',      pct:0.50},
+  {pos: 1, key:'modblow', label:'Moderate Blow', pct:0.70},
+  {pos: 2, key:'blow',    label:'Blow',          pct:0.85},
+  {pos: 3, key:'bigblow', label:'Big Blow',      pct:0.95},
+];
+BOB.RANGES = {
+  t:{min:-60, max:120, step:1},        // °F
+  p:{min:100, max:1050, step:1},       // mb (upper levels naturally low)
+  ws:{min:0, max:200, step:1},         // kt
+  wd:{min:0, max:360, step:5},         // deg
+  soil:{min:-20, max:110, step:1},     // °F
+  moisture:{min:0, max:100, step:1},
+};
+BOB.DEFAULT_COLUMN = {
+  levels:{
+    eye:{t:30, p:1008, ws:15, wd:180},
+    l5: {t:22, p:845,  ws:25, wd:200},
+    l10:{t:10, p:700,  ws:40, wd:220},
+    l18:{t:-8, p:500,  ws:60, wd:250},
+    l30:{t:-32,p:300,  ws:85, wd:270},
+    l40:{t:-52,p:200,  ws:100,wd:275},
+  },
+  soil:{skin:31, d2:33, d4:35, d8:38, d20:42},
+  moisture:65,
+  region:'splains',
+};
 
 /* ================= ENGINE (Tasks 2-10) ================= */
 /* ================= MAP (Task 11) ================= */
