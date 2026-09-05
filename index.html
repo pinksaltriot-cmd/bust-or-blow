@@ -198,13 +198,103 @@ BOB._precipType = function(prof, soilSkin){
   return 'mix'; // 30 < sfc < 36, no warm nose
 };
 
+BOB._clamp01 = x => Math.max(0, Math.min(1, x));
+// mean lapse rate eye->18k in °F per 1000 ft (positive = cooling with height)
+BOB._lapseRate = function(col){
+  const dT = col.levels.eye.t - col.levels.l18.t;
+  return dT / (18000/1000);
+};
+// bulk shear = magnitude of vector wind difference eye -> l30 (kt)
+BOB._bulkShear = function(col){
+  const toUV = (ws,wd)=>{ const r=wd*Math.PI/180; return [-ws*Math.sin(r), -ws*Math.cos(r)]; };
+  const [u0,v0]=toUV(col.levels.eye.ws, col.levels.eye.wd);
+  const [u1,v1]=toUV(col.levels.l30.ws, col.levels.l30.wd);
+  return Math.hypot(u1-u0, v1-v0);
+};
+BOB._dirShear = function(col){
+  let d = Math.abs(col.levels.l30.wd - col.levels.eye.wd) % 360;
+  return d>180 ? 360-d : d;
+};
+// precipitable-water proxy (inches): moisture dial modulated by boundary-layer warmth
+BOB._pw = function(col){
+  const warmth = BOB._clamp01((col.levels.eye.t + 10)/90); // colder air holds less
+  return (col.moisture/100) * (0.3 + 2.2*warmth);
+};
+BOB._windPot = function(col){
+  // deficit below standard 1013 mb + a shear contribution
+  const deficit = Math.max(0, 1013 - col.levels.eye.p);
+  return deficit + 0.15*BOB._bulkShear(col);
+};
+BOB._soilFreeze = function(col){
+  const vals = BOB.SOIL.map(s=>col.soil[s.key]);
+  const frac = vals.filter(v=>v<=32).length / vals.length;
+  return frac;
+};
+BOB._groundWarmth = function(col){
+  const mean = BOB.SOIL.reduce((a,s)=>a+col.soil[s.key],0)/BOB.SOIL.length;
+  return BOB._clamp01((mean-20)/60);
+};
+BOB._instability = function(col){
+  const lapse = BOB._lapseRate(col);
+  const lapseN = BOB._clamp01((lapse-3)/6);   // 3 stable -> 9 very steep
+  const pwN = BOB._clamp01(BOB._pw(col)/2.0);
+  const warmN = BOB._clamp01((col.levels.eye.t-40)/50);
+  return BOB._clamp01(0.5*lapseN + 0.3*pwN + 0.2*warmN);
+};
+// marginality drives envelope width: peaks when the setup is on a knife's edge.
+BOB._marginality = function(col, precipType){
+  const sfc = col.levels.eye.t;
+  const thermMarg = 1 - BOB._clamp01(Math.abs(sfc-32)/12); // near 32°F = marginal
+  const inst = BOB._instability(col);
+  const instMarg = 1 - Math.abs(inst-0.5)*2;               // mid instability = uncertain
+  const mixMarg = (precipType==='mix'||precipType==='sleet'||precipType==='zr') ? 0.3 : 0;
+  return BOB._clamp01(0.45*thermMarg + 0.35*instMarg + 0.2 + mixMarg - 0.2);
+};
+
 BOB.diagnose = function(col){
   const prof = BOB._profile(col);
   const freezingLevelFt = BOB._freezingLevelFt(prof);
   const warmNose = BOB._warmNose(prof);
   const precipType = BOB._precipType(prof, col.soil.skin);
-  return { prof, freezingLevelFt, warmNose, precipType };
+  const lapseRate = BOB._lapseRate(col);
+  const bulkShearKt = BOB._bulkShear(col);
+  const dirShearDeg = BOB._dirShear(col);
+  const pw = BOB._pw(col);
+  const windPot = BOB._windPot(col);
+  const soilFreeze = BOB._soilFreeze(col);
+  const groundWarmth = BOB._groundWarmth(col);
+  const instability = BOB._instability(col);
+  const marginality = BOB._marginality(col, precipType);
+  return { prof, freezingLevelFt, warmNose, precipType, lapseRate, bulkShearKt,
+           dirShearDeg, pw, windPot, soilFreeze, groundWarmth, instability, marginality };
 };
+
+window.__bobTests.push((t, approx) => {
+  const D = BOB.diagnose;
+  const c = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  // steep lapse: big drop eye->l18
+  c.levels.eye.t=75; c.levels.l18.t=-15; c.moisture=90;
+  let d = D(c);
+  t('lapse computed °F/kft', d.lapseRate > 3 && d.lapseRate < 12);
+  t('instability in 0..1', d.instability>=0 && d.instability<=1);
+  t('high instability when steep+moist', d.instability > 0.6);
+  // bulk shear from eye vs l30 wind vectors
+  const s = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  s.levels.eye.ws=10; s.levels.eye.wd=180; s.levels.l30.ws=90; s.levels.l30.wd=270;
+  d = D(s);
+  t('bulk shear positive', d.bulkShearKt > 40);
+  t('pw scales with moisture', D(Object.assign({},c,{moisture:0})).pw <
+                               D(Object.assign({},c,{moisture:100})).pw);
+  // low surface pressure -> higher wind potential proxy
+  const lo = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN)); lo.levels.eye.p=968;
+  const hi = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN)); hi.levels.eye.p=1024;
+  t('lower surface pressure -> more windPot', D(lo).windPot > D(hi).windPot);
+  // soil: all frozen -> soilFreeze high
+  const fz = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  fz.soil={skin:20,d2:22,d4:24,d8:26,d20:28};
+  t('soilFreeze high when frozen', D(fz).soilFreeze > 0.7);
+  t('marginality in 0..1', d.marginality>=0 && d.marginality<=1);
+});
 
 /* ================= MAP (Task 11) ================= */
 /* ================= UI (Tasks 12-13) ================= */
