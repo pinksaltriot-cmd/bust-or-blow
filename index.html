@@ -136,6 +136,76 @@ BOB.DEFAULT_COLUMN = {
 };
 
 /* ================= ENGINE (Tasks 2-10) ================= */
+window.__bobTests.push((t, approx) => {
+  const D = BOB.diagnose;
+  // deep-cold column -> snow, freezing level at/near surface
+  const cold = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  cold.levels.eye.t = 20; cold.soil.skin = 25;
+  let d = D(cold);
+  t('cold column -> snow', d.precipType==='snow');
+  t('cold freezing level low', d.freezingLevelFt <= 1000);
+  // warm surface, warm all the way -> rain, no cold layer
+  const warm = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  warm.levels.eye.t=55; warm.levels.l5.t=45; warm.levels.l10.t=32; warm.soil.skin=60;
+  d = D(warm);
+  t('warm column -> rain', d.precipType==='rain');
+  t('warm freezing level aloft', d.freezingLevelFt >= 6000);
+  // warm nose: cold sfc, warm layer at l5, cold above -> sleet or zr (not plain snow/rain)
+  const nose = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  nose.levels.eye.t=26; nose.levels.l5.t=37; nose.levels.l10.t=20; nose.soil.skin=27;
+  d = D(nose);
+  t('warm nose detected', d.warmNose===true);
+  t('warm nose -> ice family', d.precipType==='sleet' || d.precipType==='zr');
+});
+
+// Return array of {ft, t} sampled at the 6 levels, surface first.
+BOB._profile = function(col){
+  return BOB.LEVELS.map(l => ({ ft:l.ftAlt, t: col.levels[l.key].t }));
+};
+// Lowest altitude (ft) where temperature crosses 32°F going up. If surface already >32,
+// interpolate to where it drops to 32; if never above 32, returns 0.
+BOB._freezingLevelFt = function(prof){
+  if (prof[0].t <= 32) {
+    // find first segment rising through 32 (warm nose base); else surface is freezing
+    for (let i=0;i<prof.length-1;i++){
+      const a=prof[i], b=prof[i+1];
+      if (a.t<=32 && b.t>32) return a.ft + (b.ft-a.ft)*((32-a.t)/(b.t-a.t));
+    }
+    return 0;
+  }
+  // surface above freezing: find where it first drops to 32 going up
+  for (let i=0;i<prof.length-1;i++){
+    const a=prof[i], b=prof[i+1];
+    if (a.t>32 && b.t<=32) return a.ft + (b.ft-a.ft)*((a.t-32)/(a.t-b.t));
+  }
+  return prof[prof.length-1].ft; // whole column above freezing
+};
+// Warm nose = a subfreezing surface with an above-freezing layer aloft below ~12k ft.
+BOB._warmNose = function(prof){
+  if (prof[0].t > 32) return false;
+  for (const p of prof){ if (p.ft>0 && p.ft<=12000 && p.t>32) return true; }
+  return false;
+};
+BOB._precipType = function(prof, soilSkin){
+  const sfc = prof[0].t;
+  const warmNose = BOB._warmNose(prof);
+  if (warmNose){
+    // deep cold surface layer freezes drops on contact -> freezing rain; shallow -> sleet
+    return (sfc <= 28 && soilSkin <= 30) ? 'zr' : 'sleet';
+  }
+  if (sfc >= 36) return 'rain';
+  if (sfc <= 30) return 'snow';
+  return 'mix'; // 30 < sfc < 36, no warm nose
+};
+
+BOB.diagnose = function(col){
+  const prof = BOB._profile(col);
+  const freezingLevelFt = BOB._freezingLevelFt(prof);
+  const warmNose = BOB._warmNose(prof);
+  const precipType = BOB._precipType(prof, col.soil.skin);
+  return { prof, freezingLevelFt, warmNose, precipType };
+};
+
 /* ================= MAP (Task 11) ================= */
 /* ================= UI (Tasks 12-13) ================= */
 
