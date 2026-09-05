@@ -341,6 +341,12 @@ window.__bobTests.push((t) => {
   cls=BOB.classify(BOB.diagnose(co), co.region);
   t('very cold dry -> coldoutbreak', cls.dominant==='coldoutbreak');
   t('scores object present', cls.scores && typeof cls.scores.snowstorm==='number');
+  // Fix: a mild, merely-dry column must not win coldoutbreak just because dryness alone
+  // used to score it — coldoutbreak requires genuine cold, not just low moisture.
+  let mild=clone(); mild.levels.eye.t=48; mild.moisture=8; mild.soil.skin=45;
+  cls=BOB.classify(BOB.diagnose(mild), mild.region);
+  t('mild dry column does not classify as coldoutbreak', cls.dominant!=='coldoutbreak');
+  t('mild column scores coldoutbreak near zero', cls.scores.coldoutbreak < 0.05);
 });
 
 window.__bobTests.push((t) => {
@@ -393,6 +399,16 @@ window.__bobTests.push((t, approx) => {
   })());
   t('cold resolve rounds to 1dp and bullseye equals forecast',
      BOB.resolve(cold,cdiag,0).actual === -10);
+  // Fix: EF is a fixed 0-5 scale — a maximally-loaded severe forecast at max marginality
+  // must never resolve above 5 at any of the 7 slider stops, and the stops must still
+  // spread out (not collapse to one value) rather than just being a flat line at 5.
+  const efFc = {type:'severe', unit:'EF', value:5, label:'Tornado potential (EF)'};
+  const efDiag = {marginality:1, precipType:'other'};
+  const efVals = [-3,-2,-1,0,1,2,3].map(p=>BOB.resolve(efFc,efDiag,p).actual);
+  t('EF never exceeds 5 at any slider stop', efVals.every(v=>v<=5));
+  let efMono=true; for(let i=1;i<efVals.length;i++) if(efVals[i]<efVals[i-1]) efMono=false;
+  t('EF 7-stop resolve stays non-decreasing', efMono);
+  t('EF envelope not degenerate at max severity', efVals[0] < efVals[6]);
 });
 
 // Spec §Testing — the atmosphere sets the ceiling, and region climatology shifts events.
@@ -488,7 +504,10 @@ BOB.classify = function(diag, regionKey){
   s.severe     = cl.severe* convGate * (0.55*diag.instability + 0.40*shearN + 0.20*dirN
                                         + 0.25*BOB._clamp01(diag.pw/1.8));
   s.highwind   = cl.wind  * (0.9*lowWind + 0.3*shearN);
-  s.coldoutbreak = cl.cold* (0.9*veryCold + 0.4*(1-BOB._clamp01(diag.pw/1.0)));
+  // gated by `cold`: a dry column no longer scores coldoutbreak just for being dry — the
+  // dryness term only matters once the surface is actually near/below freezing. `cold` is
+  // already a smooth ramp (0 at 32°F, 1 by -8°F), so the gate is continuous, not a cliff.
+  s.coldoutbreak = cl.cold* cold * (0.9*veryCold + 0.4*(1-BOB._clamp01(diag.pw/1.0)));
   // pick dominant, then secondary
   const ordered = Object.keys(s).sort((a,b)=>s[b]-s[a]);
   return { dominant: ordered[0], secondary: (s[ordered[1]]>0.35*s[ordered[0]] ? ordered[1] : null), scores:s };
@@ -566,6 +585,10 @@ BOB.envelope = function(fc, diag){
   let lo = Math.max(0, v*(1-rel));
   let hi = v*(1 + 1.4*rel);
   if (v===0){ lo=0; hi=Math.max(hi, rel*2); }
+  // EF is a fixed 0-5 scale (unit-agnostic math above can otherwise overshoot it, e.g.
+  // "6.3 EF"); cap the blow end there. lo stays below v, so a maxed-out forecast still
+  // spreads across the 7 stops instead of collapsing to a single value.
+  if (fc.unit === 'EF') hi = Math.min(5, hi);
   return { lo, hi, at:(pct)=> BOB._piecewise(pct, lo, v, hi) };
 };
 // piecewise-linear through (0.05->lo, 0.5->mid, 0.95->hi); clamps outside [0.05,0.95] to ends.
