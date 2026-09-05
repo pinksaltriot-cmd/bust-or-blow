@@ -362,6 +362,22 @@ window.__bobTests.push((t, approx) => {
   t('temp envelope allows negatives', ce.at(0.05) < ce.at(0.95));
 });
 
+window.__bobTests.push((t) => {
+  // BBI: -100 at Big Bust, 0 at Bullseye, +100 at Big Blow, monotonic
+  const bbis=[-3,-2,-1,0,1,2,3].map(BOB.bbi);
+  t('BBI endpoints', bbis[0]===-100 && bbis[3]===0 && bbis[6]===100);
+  let mono=true; for(let i=1;i<bbis.length;i++) if(bbis[i]<=bbis[i-1]) mono=false;
+  t('BBI monotonic', mono);
+  // severity: bigger snowfall -> higher tier index
+  const a=BOB.severityFor('snowstorm', 3, 'umidw');
+  const b=BOB.severityFor('snowstorm', 30, 'umidw');
+  t('severity scale label', a.scale && typeof a.index==='number' && a.tier);
+  t('more snow higher index', b.index > a.index);
+  // severe uses EF-style, coldoutbreak uses a cold tier
+  t('severe scale', BOB.severityFor('severe', 4, 'splains').scale==='EF');
+  t('cold scale', !!BOB.severityFor('coldoutbreak', -20, 'nplains').tier);
+});
+
 BOB.EVENT_TYPES = ['snowstorm','blizzard','icestorm','rainflood','severe','highwind','coldoutbreak'];
 BOB.classify = function(diag, regionKey){
   const region = BOB.REGIONS.find(r=>r.key===regionKey) || {clim:{snow:1,ice:1,rain:1,severe:1,wind:1,cold:1}};
@@ -453,6 +469,50 @@ BOB.resolve = function(fc, diag, sliderPos){
   actual = (fc.unit==='°F'||fc.unit==='EF') ? +actual.toFixed(1)
          : (fc.unit==='kt') ? Math.round(actual) : +actual.toFixed(2);
   return { actual, pct:stop.pct, stop, env };
+};
+
+BOB.bbi = function(sliderPos){ return Math.round((sliderPos/3)*100); };
+
+// tierFromThresholds: returns {index (0-100), tier} given value and ascending [thr,label] pairs.
+BOB._tier = function(value, pairs, maxRef){
+  let tier = pairs[0][1];
+  for (const [thr,label] of pairs){ if (value>=thr) tier=label; }
+  const index = Math.max(0, Math.min(100, Math.round(100*value/maxRef)));
+  return { index, tier };
+};
+BOB.severityFor = function(type, value, regionKey){
+  switch(type){
+    case 'snowstorm':
+    case 'blizzard': {
+      const {index,tier}=BOB._tier(value, [[0,'Nuisance'],[2,'Minor'],[6,'Notable'],[12,'Major'],[24,'Crippling'],[40,'Historic']], 48);
+      return { scale:'RSI-style', index, tier };
+    }
+    case 'icestorm': {
+      const {index,tier}=BOB._tier(value, [[0,'Glaze'],[0.1,'Minor'],[0.25,'Damaging'],[0.5,'Crippling'],[1.0,'Catastrophic']], 1.5);
+      return { scale:'Ice', index, tier };
+    }
+    case 'rainflood': {
+      const {index,tier}=BOB._tier(value, [[0,'Light'],[1,'Soaking'],[3,'Heavy'],[6,'Flooding'],[10,'Catastrophic']], 15);
+      return { scale:'Rain', index, tier };
+    }
+    case 'severe': {
+      const tiers=['EF0','EF1','EF2','EF3','EF4','EF5'];
+      const ef=Math.max(0,Math.min(5,Math.round(value)));
+      return { scale:'EF', index:Math.round(100*ef/5), tier:tiers[ef] };
+    }
+    case 'highwind': {
+      const {index,tier}=BOB._tier(value, [[0,'Breezy'],[35,'Windy'],[50,'High Wind'],[65,'Damaging'],[85,'Extreme']], 120);
+      return { scale:'Wind', index, tier };
+    }
+    case 'coldoutbreak': {
+      // colder = more severe; invert
+      const pairs=[[100,'Chilly'],[32,'Cold'],[10,'Hard Freeze'],[-5,'Arctic'],[-25,'Life-threatening']];
+      let tier='Chilly'; for(const [thr,label] of pairs){ if(value<=thr) tier=label; }
+      const index=Math.max(0,Math.min(100,Math.round(100*(40-value)/80)));
+      return { scale:'Cold', index, tier };
+    }
+    default: return { scale:'', index:0, tier:'' };
+  }
 };
 
 /* ================= MAP (Task 11) ================= */
