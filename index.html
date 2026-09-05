@@ -674,6 +674,71 @@ window.__bobTests.push((t) => {
   })());
 });
 
+BOB.renderReport = function(sim, sliderPos){
+  const {col, diag, cls, fc} = sim;
+  const res = BOB.resolve(fc, diag, sliderPos);
+  const sev = BOB.severityFor(fc.type, res.actual, col.region);
+  const fsev = BOB.severityFor(fc.type, fc.value, col.region);
+  const bbi = BOB.bbi(sliderPos);
+  const bbiColor = bbi<0?'var(--bust)':bbi>0?'var(--blow)':'var(--bull)';
+  const unit = fc.unit==='°F'?'°F':' '+fc.unit;
+  const stops = BOB.SLIDER_STOPS.map(s=>`<option value="${s.pos}" ${s.pos===sliderPos?'selected':''}>${s.label}</option>`).join('');
+  return `
+    <h2 class="sec">Forecast → Actual</h2>
+    <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end">
+      <div><div style="color:var(--ink2);font-size:12px">Official forecast</div>
+        <div style="font-size:26px;font-weight:700">${fc.value}${unit}</div>
+        <div style="color:var(--ink2);font-size:12px">${fc.label} · ${fsev.tier}</div></div>
+      <div style="font-size:26px;color:var(--ink2)">→</div>
+      <div><div style="color:var(--ink2);font-size:12px">Actual (${res.stop.label})</div>
+        <div style="font-size:34px;font-weight:800;color:${bbiColor}">${res.actual}${unit}</div>
+        <div style="color:var(--ink2);font-size:12px">${sev.scale} · ${sev.tier} · index ${sev.index}</div></div>
+      <div><div style="color:var(--ink2);font-size:12px">Bust–Blow Index</div>
+        <div style="font-size:26px;font-weight:800;color:${bbiColor}">${bbi>0?'+':''}${bbi}</div></div>
+    </div>
+    <h2 class="sec">Dial the outcome</h2>
+    <input id="slider" type="range" min="-3" max="3" step="1" value="${sliderPos}" style="width:100%">
+    <div style="display:flex;justify-content:space-between;color:var(--ink2);font-size:11px">
+      <span>Big Bust</span><span>Bullseye</span><span>Big Blow</span></div>
+    <div style="margin-top:6px"><select id="sliderSel">${stops}</select></div>
+    <h2 class="sec">Region &amp; footprint</h2>
+    ${BOB.renderMap(col.region, fc.type)}
+    <h2 class="sec">Narrative</h2>
+    <p style="max-width:640px">${BOB.narrative(col, diag, cls, fc, res)}</p>`;
+};
+
+BOB.sliderPos = 0;
+BOB.render = function(){
+  const inputs=document.getElementById('inputs');
+  const results=document.getElementById('results');
+  inputs.innerHTML = BOB.buildInputs();
+  const sim = BOB.simulate(BOB.state);
+  results.innerHTML = BOB.renderReport(sim, BOB.sliderPos);
+  BOB._wire();
+};
+BOB._recompute = function(){ BOB.readInputs(); BOB.render(); };
+BOB._wire = function(){
+  document.querySelectorAll('input[data-lvl],input[data-soil]').forEach(i=>i.addEventListener('change', BOB._recompute));
+  const m=document.getElementById('moisture'); if(m) m.addEventListener('input', ()=>{ document.getElementById('moistval').textContent=m.value; BOB.readInputs(); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
+  const rg=document.getElementById('region'); if(rg) rg.addEventListener('change', BOB._recompute);
+  const sl=document.getElementById('slider'); if(sl) sl.addEventListener('input', ()=>{ BOB.sliderPos=parseInt(sl.value,10); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
+  const ss=document.getElementById('sliderSel'); if(ss) ss.addEventListener('change', ()=>{ BOB.sliderPos=parseInt(ss.value,10); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
+  const rnd=document.getElementById('randomize'); if(rnd) rnd.addEventListener('click', ()=>{ BOB.state=BOB.randomColumn(); BOB.render(); });
+  const rst=document.getElementById('reset'); if(rst) rst.addEventListener('click', ()=>{ BOB.state=JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN)); BOB.sliderPos=0; BOB.render(); });
+};
+// boot (skip when running selftest)
+if (!/(\?|&)selftest\b/.test(location.search)) {
+  window.addEventListener('DOMContentLoaded', BOB.render);
+}
+
+window.__bobTests.push((t) => {
+  const sim=BOB.simulate(BOB.DEFAULT_COLUMN);
+  const html=BOB.renderReport(sim, 0);
+  t('report shows forecast + actual + BBI', /Official forecast/.test(html) && /Bust–Blow Index/.test(html) && /id="slider"/.test(html));
+  const blow=BOB.renderReport(sim, 3), bust=BOB.renderReport(sim,-3);
+  t('report reflects slider label', /Big Blow/.test(blow) && /Big Bust/.test(bust));
+});
+
 /* ================= SELF-TEST HARNESS ================= */
 (function(){
   if (!/(\?|&)selftest\b/.test(location.search)) return;
