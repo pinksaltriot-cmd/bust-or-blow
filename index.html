@@ -378,6 +378,19 @@ window.__bobTests.push((t) => {
   t('cold scale', !!BOB.severityFor('coldoutbreak', -20, 'nplains').tier);
 });
 
+window.__bobTests.push((t) => {
+  const clone=()=>JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  const c=clone(); c.levels.eye.t=22; c.soil.skin=25; c.moisture=85; c.region='umidw';
+  const d=BOB.diagnose(c), cls=BOB.classify(d,c.region), fc=BOB.forecast(c,d,cls);
+  const res=BOB.resolve(fc,d,3); // Big Blow
+  const s=BOB.narrative(c,d,cls,fc,res);
+  t('narrative is nonempty string', typeof s==='string' && s.length>40);
+  t('narrative names the region', s.indexOf('Upper Midwest')>=0);
+  t('narrative names blow', /blow/i.test(s));
+  const res2=BOB.resolve(fc,d,-3);
+  t('bust narrative names bust', /bust/i.test(BOB.narrative(c,d,cls,fc,res2)));
+});
+
 BOB.EVENT_TYPES = ['snowstorm','blizzard','icestorm','rainflood','severe','highwind','coldoutbreak'];
 BOB.classify = function(diag, regionKey){
   const region = BOB.REGIONS.find(r=>r.key===regionKey) || {clim:{snow:1,ice:1,rain:1,severe:1,wind:1,cold:1}};
@@ -513,6 +526,26 @@ BOB.severityFor = function(type, value, regionKey){
     }
     default: return { scale:'', index:0, tier:'' };
   }
+};
+
+BOB.TYPE_LABELS = {snowstorm:'snowstorm', blizzard:'blizzard', icestorm:'ice storm',
+  rainflood:'rain event', severe:'severe convective outbreak', highwind:'high-wind event',
+  coldoutbreak:'cold-air outbreak'};
+BOB.narrative = function(col, diag, cls, fc, res){
+  const region = (BOB.REGIONS.find(r=>r.key===col.region)||{name:'the region'}).name;
+  const label = BOB.TYPE_LABELS[cls.dominant] || 'event';
+  const dir = res.stop.pos<0 ? 'busted' : res.stop.pos>0 ? 'blew up' : 'verified';
+  const delta = res.actual - fc.value;
+  const sign = delta>0?'+':'';
+  const pt = {snow:'snow',rain:'rain',zr:'freezing rain',sleet:'sleet',mix:'a wintry mix',none:'no precip'}[diag.precipType]||diag.precipType;
+  let s = `Over the ${region}, the column set up for a ${label}. The official forecast called for `
+    + `${fc.value}${fc.unit==='°F'?'°F':' '+fc.unit} (${fc.label.toLowerCase()}), with ${pt} the dominant type. `;
+  s += `You dialed it to ${res.stop.label} — the event ${dir} to ${res.actual}${fc.unit==='°F'?'°F':' '+fc.unit} `
+    + `(${sign}${(+delta.toFixed(2))} vs forecast). `;
+  if (cls.secondary) s += `A secondary ${BOB.TYPE_LABELS[cls.secondary]} threat lurked in the setup. `;
+  if (diag.marginality>0.6) s += `The setup was marginal, so the envelope was wide — this outcome was well within reach. `;
+  else s += `The setup was robust, so outcomes clustered near the forecast. `;
+  return s.trim();
 };
 
 /* ================= MAP (Task 11) ================= */
