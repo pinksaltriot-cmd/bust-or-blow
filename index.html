@@ -369,10 +369,54 @@ window.__bobTests.push((t, approx) => {
   t('7-stop resolve monotonic', mono);
   t('bullseye stop equals forecast', approx(BOB.resolve(fc,diag,0).actual, 10, 1e-6));
   t('resolve returns stop meta', BOB.resolve(fc,diag,3).stop.key==='bigblow');
-  // temperature envelope: colder = "blow" for a cold outbreak (bust = milder). still monotonic by value.
+  // temperature envelope is monotonic in SEVERITY: blow = colder, bust = milder.
   const cold={type:'coldoutbreak',unit:'°F',value:-10,label:'Low temperature'};
   const ce=BOB.envelope(cold,{marginality:0.5,precipType:'none'});
-  t('temp envelope allows negatives', ce.at(0.05) < ce.at(0.95));
+  t('temp envelope blow is colder than bust', ce.at(0.95) < ce.at(0.5) && ce.at(0.5) < ce.at(0.05));
+  t('temp envelope bullseye equals forecast', approx(ce.at(0.5), -10, 1e-6));
+  // unlike amounts, the °F family is not floored at zero
+  t('temp envelope allows negatives', ce.at(0.95) < 0 && ce.hi < 0);
+  const cdiag={marginality:0.5, precipType:'none'};
+  t('cold Big Blow colder + more severe than Big Bust', (function(){
+     const bust=BOB.resolve(cold,cdiag,-3), blow=BOB.resolve(cold,cdiag,3);
+     return blow.actual < bust.actual &&
+       BOB.severityFor('coldoutbreak',blow.actual,'nplains').index >
+       BOB.severityFor('coldoutbreak',bust.actual,'nplains').index;
+  })());
+  t('cold resolve rounds to 1dp and bullseye equals forecast',
+     BOB.resolve(cold,cdiag,0).actual === -10);
+});
+
+// Spec §Testing — the atmosphere sets the ceiling, and region climatology shifts events.
+window.__bobTests.push((t) => {
+  const clone=()=>JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  const bigBlow=(c)=>{ const d=BOB.diagnose(c), cl=BOB.classify(d,c.region);
+                       return BOB.resolve(BOB.forecast(c,d,cl), d, 3).actual; };
+  // Dry ceiling: same cold column, only moisture differs. The dry column's Big Blow high
+  // tail must stay strictly under the loaded column's — a dry column cannot reach a big event.
+  const dry=clone(); dry.levels.eye.t=22; dry.soil.skin=25; dry.moisture=15; dry.region='umidw';
+  const wet=clone(); wet.levels.eye.t=22; wet.soil.skin=25; wet.moisture=90; wet.region='umidw';
+  t('dry column ceiling below loaded column', bigBlow(dry) < bigBlow(wet));
+  // Shear alone cannot manufacture a tornado outbreak in a dry, stable column.
+  const shearOnly={levels:{
+      eye:{t:34,p:1013,ws:10,wd:180}, l5:{t:30,p:845,ws:20,wd:190}, l10:{t:24,p:700,ws:40,wd:200},
+      l18:{t:12,p:500,ws:70,wd:240}, l30:{t:-10,p:300,ws:120,wd:280}, l40:{t:-30,p:200,ws:130,wd:285}},
+    soil:{skin:36,d2:36,d4:37,d8:38,d20:40}, moisture:0, region:'splains'};
+  const sd=BOB.diagnose(shearOnly), sc=BOB.classify(sd, shearOnly.region);
+  t('big shear alone gives no instability', sd.instability===0 && sd.pw===0);
+  t('dry stable column is not severe', sc.dominant!=='severe' && sc.scores.severe===0);
+  t('moisture-starved column reports no precip', sd.precipType==='none');
+  // even if the severe branch is forced, the gated forecast yields no tornado
+  t('dry stable column tornado ceiling is nil',
+     BOB.forecast(shearOnly, sd, {dominant:'severe'}).value === 0);
+  // Region climatology: the same column classifies differently by region.
+  const base=clone(); base.levels.eye.t=24; base.soil.skin=26; base.moisture=80;
+  base.levels.eye.ws=45; base.levels.eye.p=975;
+  const north=Object.assign({}, base, {region:'umidw'});
+  const south=Object.assign({}, base, {region:'gulf'});
+  const cn=BOB.classify(BOB.diagnose(north),'umidw'), cs=BOB.classify(BOB.diagnose(south),'gulf');
+  t('same column, different regions -> different events', cn.dominant !== cs.dominant);
+  t('region climatology shifts the snow score', cn.scores.snowstorm > cs.scores.snowstorm);
 });
 
 window.__bobTests.push((t) => {
@@ -486,17 +530,22 @@ BOB.forecast = function(col, diag, cls){
   }
 };
 
-// Amount-type events (in/kt/EF) are bounded at 0 and blow upward. Temperature blows downward
-// (colder), but we keep envelope.at() monotonically increasing in pct by value; the report
-// layer interprets direction. relWidth grows with marginality.
-BOB._AMOUNT_UNITS = {'in':1,'kt':1,'EF':1};
+// The envelope is monotonic in SEVERITY, not in raw value: at(pct) always runs from the
+// Big Bust end (pct 0.05) to the Big Blow end (pct 0.95), so a higher pct is always the
+// bigger event. `lo` is the bust end and `hi` the blow end.
+//   - Amount events (in/kt/EF): bust = less, blow = more. Bounded at 0.
+//   - Temperature (°F, cold outbreak): bust = milder, blow = COLDER. at() therefore
+//     decreases in degrees as pct rises, which keeps BBI, the severity tier and the
+//     narrative all pointing the same way.
+// relWidth grows with marginality.
 BOB.envelope = function(fc, diag){
   const v = fc.value;
   const rel = 0.20 + 0.85*(diag.marginality==null?0.4:diag.marginality); // 0.20 tight .. ~1.0 wild
   if (fc.unit === '°F'){
     // additive spread in degrees; more marginal -> larger swing
     const half = 6 + 34*rel;
-    const lo = v - half, hi = v + half;
+    const lo = v + half;   // bust end: milder
+    const hi = v - half;   // blow end: colder
     return { lo, hi, at:(pct)=> BOB._piecewise(pct, lo, v, hi) };
   }
   // multiplicative for amounts, floored at 0
@@ -571,14 +620,19 @@ BOB.TYPE_LABELS = {snowstorm:'snowstorm', blizzard:'blizzard', icestorm:'ice sto
 BOB.narrative = function(col, diag, cls, fc, res){
   const region = (BOB.REGIONS.find(r=>r.key===col.region)||{name:'the region'}).name;
   const label = BOB.TYPE_LABELS[cls.dominant] || 'event';
-  const dir = res.stop.pos<0 ? 'busted' : res.stop.pos>0 ? 'blew up' : 'verified';
-  const delta = res.actual - fc.value;
+  const isTemp = fc.unit==='°F';
+  const dir = res.stop.pos<0 ? (isTemp?'busted milder':'busted')
+            : res.stop.pos>0 ? (isTemp?'blew colder':'blew up') : 'verified';
+  const delta = BOB._roundFor(fc.type, fc.unit, res.actual - fc.value);
   const sign = delta>0?'+':'';
+  const deltaTxt = delta===0 ? 'exactly on the forecast number'
+    : isTemp ? `${Math.abs(delta)}°F ${delta<0?'colder':'milder'} than forecast`
+    : `${sign}${delta} vs forecast`;
   const pt = {snow:'snow',rain:'rain',zr:'freezing rain',sleet:'sleet',mix:'a wintry mix',none:'no precip'}[diag.precipType]||diag.precipType;
   let s = `Over the ${region}, the column set up for a ${label}. The official forecast called for `
-    + `${fc.value}${fc.unit==='°F'?'°F':' '+fc.unit} (${fc.label.toLowerCase()}), with ${pt} the dominant type. `;
-  s += `You dialed it to ${res.stop.label} — the event ${dir} to ${res.actual}${fc.unit==='°F'?'°F':' '+fc.unit} `
-    + `(${sign}${(+delta.toFixed(2))} vs forecast). `;
+    + `${fc.value}${isTemp?'°F':' '+fc.unit} (${fc.label.toLowerCase()}), with ${pt} the dominant type. `;
+  s += `You dialed it to ${res.stop.label} — the event ${dir} to ${res.actual}${isTemp?'°F':' '+fc.unit} `
+    + `(${deltaTxt}). `;
   if (cls.secondary) s += `A secondary ${BOB.TYPE_LABELS[cls.secondary]} threat lurked in the setup. `;
   if (diag.marginality>0.6) s += `The setup was marginal, so the envelope was wide — this outcome was well within reach. `;
   else s += `The setup was robust, so outcomes clustered near the forecast. `;
