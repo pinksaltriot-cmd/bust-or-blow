@@ -296,6 +296,53 @@ window.__bobTests.push((t, approx) => {
   t('marginality in 0..1', d.marginality>=0 && d.marginality<=1);
 });
 
+window.__bobTests.push((t) => {
+  const clone = ()=>JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  // classic snowstorm: cold, moist, plains
+  let c=clone(); c.levels.eye.t=24; c.soil.skin=26; c.moisture=80; c.region='umidw';
+  let cls=BOB.classify(BOB.diagnose(c), c.region);
+  t('cold moist -> snowstorm/blizzard', cls.dominant==='snowstorm'||cls.dominant==='blizzard');
+  // add strong low-level wind -> blizzard
+  c.levels.eye.ws=45; c.levels.eye.p=975;
+  cls=BOB.classify(BOB.diagnose(c), c.region);
+  t('cold+wind -> blizzard', cls.dominant==='blizzard');
+  // hot, steep, sheared, southern plains -> severe
+  let s=clone(); s.levels.eye.t=82; s.levels.l18.t=-20; s.moisture=90;
+  s.levels.eye.ws=15; s.levels.l30.ws=95; s.levels.l30.wd=270; s.region='splains';
+  cls=BOB.classify(BOB.diagnose(s), s.region);
+  t('hot sheared -> severe', cls.dominant==='severe');
+  // warm nose over cold surface -> icestorm
+  let i=clone(); i.levels.eye.t=27; i.levels.l5.t=38; i.levels.l10.t=22; i.soil.skin=26; i.moisture=70;
+  cls=BOB.classify(BOB.diagnose(i), i.region);
+  t('warm nose -> icestorm', cls.dominant==='icestorm');
+  // very cold, dry, no precip -> coldoutbreak
+  let co=clone(); co.levels.eye.t=-15; co.moisture=5; co.soil.skin=5;
+  cls=BOB.classify(BOB.diagnose(co), co.region);
+  t('very cold dry -> coldoutbreak', cls.dominant==='coldoutbreak');
+  t('scores object present', cls.scores && typeof cls.scores.snowstorm==='number');
+});
+
+BOB.EVENT_TYPES = ['snowstorm','blizzard','icestorm','rainflood','severe','highwind','coldoutbreak'];
+BOB.classify = function(diag, regionKey){
+  const region = BOB.REGIONS.find(r=>r.key===regionKey) || {clim:{snow:1,ice:1,rain:1,severe:1,wind:1,cold:1}};
+  const cl = region.clim;
+  const cold = BOB._clamp01((32 - diag.prof[0].t)/40);      // how far below freezing
+  const veryCold = BOB._clamp01((10 - diag.prof[0].t)/40);
+  const snowy = (diag.precipType==='snow') ? 1 : (diag.precipType==='mix'?0.4:0);
+  const lowWind = BOB._clamp01((diag.windPot-20)/60);
+  const s = {};
+  s.snowstorm  = cl.snow  * (0.55*snowy + 0.6*BOB._clamp01(diag.pw/1.5) + 0.35*cold);
+  s.blizzard   = cl.snow  * cl.wind * (snowy>0?1:0) * (0.6*BOB._clamp01(diag.pw/1.2) + 0.8*lowWind + 0.4*cold);
+  s.icestorm   = cl.ice   * (diag.warmNose?1:0) * (0.8 + 0.5*BOB._clamp01(diag.pw/1.2));
+  s.rainflood  = cl.rain  * ((diag.precipType==='rain'||diag.precipType==='zr')?1:0.2) * (0.9*BOB._clamp01(diag.pw/2.0));
+  s.severe     = cl.severe* (0.7*diag.instability + 0.5*BOB._clamp01(diag.bulkShearKt/70) + 0.3*BOB._clamp01(diag.pw/1.8));
+  s.highwind   = cl.wind  * (0.9*lowWind + 0.3*BOB._clamp01(diag.bulkShearKt/70));
+  s.coldoutbreak = cl.cold* (0.9*veryCold + 0.4*(1-BOB._clamp01(diag.pw/1.0)));
+  // pick dominant, then secondary
+  const ordered = Object.keys(s).sort((a,b)=>s[b]-s[a]);
+  return { dominant: ordered[0], secondary: (s[ordered[1]]>0.35*s[ordered[0]] ? ordered[1] : null), scores:s };
+};
+
 /* ================= MAP (Task 11) ================= */
 /* ================= UI (Tasks 12-13) ================= */
 
