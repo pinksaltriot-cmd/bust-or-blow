@@ -322,6 +322,25 @@ window.__bobTests.push((t) => {
   t('scores object present', cls.scores && typeof cls.scores.snowstorm==='number');
 });
 
+window.__bobTests.push((t) => {
+  const clone=()=>JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
+  const F=(c)=>{const d=BOB.diagnose(c);return BOB.forecast(c,d,BOB.classify(d,c.region));};
+  let c=clone(); c.levels.eye.t=22; c.soil.skin=25; c.moisture=85; c.region='umidw';
+  let fc=F(c);
+  t('snow forecast has inches unit', fc.type==='snowstorm'||fc.type==='blizzard');
+  t('snow value positive', fc.unit==='in' && fc.value>0);
+  t('more moisture -> more snow', (function(){
+     const a=clone(); a.levels.eye.t=22; a.soil.skin=25; a.moisture=30; a.region='umidw';
+     const b=clone(); b.levels.eye.t=22; b.soil.skin=25; b.moisture=95; b.region='umidw';
+     return F(b).value > F(a).value;
+  })());
+  let s=clone(); s.levels.eye.t=82; s.levels.l18.t=-20; s.moisture=90;
+  s.levels.eye.ws=15; s.levels.l30.ws=95; s.levels.l30.wd=270; s.region='splains';
+  t('severe forecast 0..5 scale', (function(){const f=F(s);return f.type==='severe'&&f.unit==='EF'&&f.value>=0&&f.value<=5;})());
+  let co=clone(); co.levels.eye.t=-15; co.moisture=5; co.soil.skin=5;
+  t('coldoutbreak value is a temperature', (function(){const f=F(co);return f.type==='coldoutbreak'&&f.unit==='°F'&&f.value<20;})());
+});
+
 BOB.EVENT_TYPES = ['snowstorm','blizzard','icestorm','rainflood','severe','highwind','coldoutbreak'];
 BOB.classify = function(diag, regionKey){
   const region = BOB.REGIONS.find(r=>r.key===regionKey) || {clim:{snow:1,ice:1,rain:1,severe:1,wind:1,cold:1}};
@@ -341,6 +360,43 @@ BOB.classify = function(diag, regionKey){
   // pick dominant, then secondary
   const ordered = Object.keys(s).sort((a,b)=>s[b]-s[a]);
   return { dominant: ordered[0], secondary: (s[ordered[1]]>0.35*s[ordered[0]] ? ordered[1] : null), scores:s };
+};
+
+BOB.forecast = function(col, diag, cls){
+  const type = cls.dominant;
+  const pw = diag.pw;
+  switch(type){
+    case 'snowstorm':
+    case 'blizzard': {
+      // snow ratio grows as it gets colder (dendritic), soil that's frozen keeps it
+      const ratio = 8 + 6*BOB._clamp01((32-col.levels.eye.t)/30);      // 8:1 .. 14:1
+      const keep  = 0.5 + 0.5*BOB._clamp01((34-col.soil.skin)/14);     // warm ground melts
+      const val = pw * ratio * keep;
+      return { type, unit:'in', value:+val.toFixed(1), label:'Snowfall' };
+    }
+    case 'icestorm': {
+      const val = pw * 0.35 * (col.soil.skin<=30?1:0.6);
+      return { type, unit:'in', value:+val.toFixed(2), label:'Ice accretion' };
+    }
+    case 'rainflood': {
+      const val = pw * 1.6;
+      return { type, unit:'in', value:+val.toFixed(2), label:'Rainfall' };
+    }
+    case 'severe': {
+      const val = 5 * BOB._clamp01(0.6*diag.instability + 0.4*BOB._clamp01(diag.bulkShearKt/70));
+      return { type, unit:'EF', value:+val.toFixed(1), label:'Tornado potential (EF)' };
+    }
+    case 'highwind': {
+      const val = 20 + diag.windPot*0.9;
+      return { type, unit:'kt', value:Math.round(val), label:'Peak gust' };
+    }
+    case 'coldoutbreak': {
+      const val = col.levels.eye.t - 6*diag.soilFreeze;
+      return { type, unit:'°F', value:Math.round(val), label:'Low temperature' };
+    }
+    default:
+      return { type, unit:'', value:0, label:'Event' };
+  }
 };
 
 /* ================= MAP (Task 11) ================= */
