@@ -32,8 +32,9 @@
 <body>
 <header>
   <span style="font-size:20px">🎯</span>
-  <h1>Bust or Blow</h1>
-  <span class="sub">engineer a column · issue a forecast · dial the outcome</span>
+  <h1 id="apptitle">Bust or Blow</h1>
+  <span class="sub" id="appsub">engineer a column · issue a forecast · dial the outcome</span>
+  <button id="langToggle" style="margin-left:auto;font-size:12px;padding:5px 10px">🗣️ Yoopanese</button>
 </header>
 
 <div class="app" id="app">
@@ -703,9 +704,13 @@ BOB.warnings = function(col){
   const w=[]; const L=col.levels;
   for(let i=1;i<BOB.LEVELS.length;i++){
     const a=BOB.LEVELS[i-1].key, b=BOB.LEVELS[i].key;
-    if (L[b].p >= L[a].p) w.push(`Pressure not decreasing with height (${BOB.LEVELS[i].label}).`);
+    if (L[b].p >= L[a].p) w.push(BOB.lang==='yooper'
+      ? `Pressure ain\u2019t droppin\u2019 as ya go up (${BOB.LEVELS[i].label}), eh.`
+      : `Pressure not decreasing with height (${BOB.LEVELS[i].label}).`);
   }
-  if (L.eye.t < L.l40.t) w.push('Surface colder than 40k ft — deeply inverted column.');
+  if (L.eye.t < L.l40.t) w.push(BOB.lang==='yooper'
+    ? 'Ground\u2019s colder dan 40,000 feet up — dat column\u2019s upside down, eh.'
+    : 'Surface colder than 40k ft — deeply inverted column.');
   return w;
 };
 
@@ -748,6 +753,109 @@ BOB.renderMap = function(regionKey, dominantType){
     + nodes + `</svg>`;
 };
 
+/* ================= YOOPANESE (language toggle) ================= */
+// Display-only translation layer. Every number, key and score is computed in English and
+// untouched; only the words a person reads are swapped. English is the default, and the
+// self-test always runs in English. ?lang=yooper or the header button switches it.
+BOB.lang = (function(){
+  if (/(\?|&)selftest\b/.test(location.search)) return 'en';
+  const q = /(?:\?|&)lang=(yooper|en)\b/.exec(location.search);
+  if (q) return q[1];
+  try { return localStorage.getItem('bob.lang') === 'yooper' ? 'yooper' : 'en'; } catch(e){ return 'en'; }
+})();
+BOB.YOOPER = {
+  'Bust or Blow':'Bust or Blow, Eh?',
+  'engineer a column · issue a forecast · dial the outcome':'rig up yer column · put out a forecast · crank da outcome',
+  // inputs
+  'Atmospheric column':'Da air, straight up',
+  'Soil temperature (°F)':'How cold’s da dirt (°F)',
+  'Moisture':'How wet she is',
+  'Bone dry ⟷ Gulf-juiced':'Dry as a popple stick ⟷ Soppin’ wet from da Gulf',
+  'Region':'Where at',
+  '🎲 Randomize':'🎲 Give ’er a whirl',
+  'Reset':'Start over, eh',
+  'dir':'which way',
+  'Eye level':'Eyeball level',
+  'Surface':'Top o’ da dirt',
+  // slider
+  'Big Bust':'Big Ol’ Bust', 'Bust':'Bust', 'Moderate Bust':'Kinda Bust',
+  'Bullseye':'Right On Da Nose',
+  'Moderate Blow':'Kinda Blow', 'Blow':'Blow', 'Big Blow':'Big Ol’ Blow',
+  // report
+  'Forecast → Actual':'What dey said → What ya got',
+  'Official forecast':'What dey said',
+  'Actual':'What ya got',
+  'Bust–Blow Index':'Bust–Blow Index, eh',
+  'Dial the outcome':'Crank da outcome',
+  'Region & footprint':'Where at an’ how big',
+  'Narrative':'Da story',
+  'index':'index',
+  // forecast labels
+  'Snowfall':'Snow', 'Ice accretion':'Ice buildup', 'Rainfall':'Rain',
+  'Tornado potential (EF)':'Twister odds (EF)', 'Peak gust':'Biggest gust',
+  'Low temperature':'How cold she gets', 'Event':'Da ting',
+  // severity tiers
+  'Nuisance':'Just a Skiff', 'Minor':'No Big Deal', 'Notable':'Now Yer Talkin’',
+  'Major':'Holy Wah', 'Crippling':'Stuck at Camp', 'Historic':'Heikki Lunta Himself',
+  'Glaze':'Bit Slippy', 'Damaging':'Trees Comin’ Down', 'Catastrophic':'Cripes, Everyting',
+  'Light':'Sprinkle', 'Soaking':'Soaker', 'Heavy':'Real Downpour', 'Flooding':'Da Crick’s Up',
+  'Breezy':'Bit Breezy', 'Windy':'Windy, Eh', 'High Wind':'Real Blowy', 'Extreme':'Gales o’ November',
+  'Chilly':'Sweater Weather', 'Cold':'Chilly', 'Hard Freeze':'Cold Enough', 'Arctic':'Real Cold Now',
+  'Life-threatening':'Dangerous Cold, Stay Inside',
+};
+// Tier words collide across scales ("Minor", "Crippling", "Catastrophic"), so the scale picks
+// the reading: an ice-storm "Crippling" means the power is out, a snowstorm one means camp.
+BOB.YOOPER_BY_SCALE = {
+  Ice:  {'Minor':'Slippy', 'Crippling':'Power’s Out ta Marquette'},
+  Rain: {'Catastrophic':'Holy Wah, Da Whole Crick'},
+};
+BOB.L = function(s){
+  if (BOB.lang !== 'yooper') return s;
+  return Object.prototype.hasOwnProperty.call(BOB.YOOPER, s) ? BOB.YOOPER[s] : s;
+};
+BOB.LT = function(scale, tier){
+  if (BOB.lang !== 'yooper') return tier;
+  const m = BOB.YOOPER_BY_SCALE[scale];
+  return (m && m[tier]) || BOB.L(tier);
+};
+BOB.YOOPER_TYPE = {snowstorm:'snowstorm', blizzard:'real blizzard', icestorm:'ice storm',
+  rainflood:'soaker', severe:'bunch o’ nasty thunderstorms', highwind:'real windy spell',
+  coldoutbreak:'cold snap'};
+BOB.narrativeYooper = function(col, diag, cls, fc, res){
+  const region = (BOB.REGIONS.find(r=>r.key===col.region)||{name:'da region'}).name;
+  const label = BOB.YOOPER_TYPE[cls.dominant] || 'ting';
+  const isTemp = fc.unit==='°F';
+  const dir = res.stop.pos<0 ? (isTemp?'busted warmer':'busted')
+            : res.stop.pos>0 ? (isTemp?'got colder yet':'blew up real good') : 'come in right on da nose';
+  const delta = BOB._roundFor(fc.type, fc.unit, res.actual - fc.value);
+  const deltaTxt = delta===0 ? 'right on da number'
+    : isTemp ? `${Math.abs(delta)}°F ${delta<0?'colder':'warmer'} dan dey said`
+    : `${Math.abs(delta)} ${delta>0?'more':'less'} dan dey said`;
+  const pt = {snow:'snow',rain:'rain',zr:'freezin’ rain',sleet:'sleet',mix:'a slop mix',none:'nuttin’ fallin’'}[diag.precipType]||diag.precipType;
+  let s = `Over da ${region}, da column set up for a ${label}, eh. Da forecast called fer `
+    + `${fc.value}${isTemp?'°F':' '+fc.unit} (${BOB.L(fc.label).toLowerCase()}), mostly ${pt}. `;
+  s += `Ya cranked ’er ta ${BOB.L(res.stop.label)} — da ting ${dir}, ${res.actual}${isTemp?'°F':' '+fc.unit} `
+    + `(${deltaTxt}). `;
+  if (cls.secondary) s += `Dere was a ${BOB.YOOPER_TYPE[cls.secondary]} lurkin’ in dere too, ya know. `;
+  if (diag.marginality>0.6) s += `Setup was real touchy, so dat envelope was wide open — dis one was well within reach, eh. `;
+  else s += `Setup was solid, so she stayed pretty close ta da forecast, yah. `;
+  return s.trim();
+};
+BOB.setLang = function(lang){
+  BOB.lang = lang === 'yooper' ? 'yooper' : 'en';
+  try { localStorage.setItem('bob.lang', BOB.lang); } catch(e){}
+  BOB.render();
+};
+BOB._applyChrome = function(){
+  const t = BOB.L('Bust or Blow');
+  document.title = t;
+  const h = document.getElementById('apptitle'); if (h) h.textContent = t;
+  const s = document.getElementById('appsub');
+  if (s) s.textContent = BOB.L('engineer a column · issue a forecast · dial the outcome');
+  const b = document.getElementById('langToggle');
+  if (b) b.textContent = BOB.lang==='yooper' ? '🗣️ English' : '🗣️ Yoopanese';
+};
+
 /* ================= UI (Tasks 12-13) ================= */
 BOB.state = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
 BOB._num = (v,fb)=>{ const n=parseFloat(v); return isFinite(n)?n:fb; };
@@ -759,32 +867,32 @@ BOB.buildInputs = function(){
     const cell=(f,val)=>`<input data-lvl="${l.key}" data-f="${f}" type="number" `
       +`min="${R[f].min}" max="${R[f].max}" step="${R[f].step}" value="${val}" `
       +`style="width:64px;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:4px;padding:3px">`;
-    return `<tr><td style="color:var(--ink2)">${l.label}</td>`
+    return `<tr><td style="color:var(--ink2)">${BOB.L(l.label)}</td>`
       +`<td>${cell('t',v.t)}</td><td>${cell('p',v.p)}</td><td>${cell('ws',v.ws)}</td><td>${cell('wd',v.wd)}</td></tr>`;
   }).join('');
   const soil = BOB.SOIL.map(s=>{
     const val=BOB.state.soil[s.key];
-    return `<label style="display:inline-block;margin:2px 8px 2px 0">${s.label} `
+    return `<label style="display:inline-block;margin:2px 8px 2px 0">${BOB.L(s.label)} `
       +`<input data-soil="${s.key}" type="number" min="${R.soil.min}" max="${R.soil.max}" value="${val}" `
       +`style="width:56px;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:4px;padding:3px"></label>`;
   }).join('');
   const regionOpts = BOB.REGIONS.map(r=>`<option value="${r.key}" ${r.key===BOB.state.region?'selected':''}>${r.name}</option>`).join('');
   return `
-    <h2 class="sec">Atmospheric column</h2>
+    <h2 class="sec">${BOB.L('Atmospheric column')}</h2>
     <table style="border-collapse:collapse;font-size:12px">
-      <tr style="color:var(--head)"><td></td><td>°F</td><td>mb</td><td>kt</td><td>dir</td></tr>
+      <tr style="color:var(--head)"><td></td><td>°F</td><td>mb</td><td>kt</td><td>${BOB.L('dir')}</td></tr>
       ${rows}
     </table>
-    <h2 class="sec">Soil temperature (°F)</h2>
+    <h2 class="sec">${BOB.L('Soil temperature (°F)')}</h2>
     <div>${soil}</div>
-    <h2 class="sec">Moisture</h2>
+    <h2 class="sec">${BOB.L('Moisture')}</h2>
     <input id="moisture" type="range" min="0" max="100" value="${BOB.state.moisture}" style="width:100%">
-    <div style="color:var(--ink2);font-size:12px">Bone dry ⟷ Gulf-juiced (<span id="moistval">${BOB.state.moisture}</span>)</div>
-    <h2 class="sec">Region</h2>
+    <div style="color:var(--ink2);font-size:12px">${BOB.L('Bone dry ⟷ Gulf-juiced')} (<span id="moistval">${BOB.state.moisture}</span>)</div>
+    <h2 class="sec">${BOB.L('Region')}</h2>
     <select id="region" style="width:100%;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:6px">${regionOpts}</select>
     <div style="margin-top:14px;display:flex;gap:8px">
-      <button id="randomize">🎲 Randomize</button>
-      <button id="reset">Reset</button>
+      <button id="randomize">${BOB.L('🎲 Randomize')}</button>
+      <button id="reset">${BOB.L('Reset')}</button>
     </div>`;
 };
 
@@ -834,29 +942,29 @@ BOB.renderReport = function(sim, sliderPos){
   const bbi = BOB.bbi(sliderPos);
   const bbiColor = bbi<0?'var(--bust)':bbi>0?'var(--blow)':'var(--bull)';
   const unit = fc.unit==='°F'?'°F':' '+fc.unit;
-  const stops = BOB.SLIDER_STOPS.map(s=>`<option value="${s.pos}" ${s.pos===sliderPos?'selected':''}>${s.label}</option>`).join('');
+  const stops = BOB.SLIDER_STOPS.map(s=>`<option value="${s.pos}" ${s.pos===sliderPos?'selected':''}>${BOB.L(s.label)}</option>`).join('');
   return `
-    <h2 class="sec">Forecast → Actual</h2>
+    <h2 class="sec">${BOB.L('Forecast → Actual')}</h2>
     <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-end">
-      <div><div style="color:var(--ink2);font-size:12px">Official forecast</div>
+      <div><div style="color:var(--ink2);font-size:12px">${BOB.L('Official forecast')}</div>
         <div style="font-size:26px;font-weight:700">${fc.value}${unit}</div>
-        <div style="color:var(--ink2);font-size:12px">${fc.label} · ${fsev.tier}</div></div>
+        <div style="color:var(--ink2);font-size:12px">${BOB.L(fc.label)} · ${BOB.LT(fsev.scale, fsev.tier)}</div></div>
       <div style="font-size:26px;color:var(--ink2)">→</div>
-      <div><div style="color:var(--ink2);font-size:12px">Actual (${res.stop.label})</div>
+      <div><div style="color:var(--ink2);font-size:12px">${BOB.L('Actual')} (${BOB.L(res.stop.label)})</div>
         <div style="font-size:34px;font-weight:800;color:${bbiColor}">${res.actual}${unit}</div>
-        <div style="color:var(--ink2);font-size:12px">${sev.scale} · ${sev.tier} · index ${sev.index}</div></div>
-      <div><div style="color:var(--ink2);font-size:12px">Bust–Blow Index</div>
+        <div style="color:var(--ink2);font-size:12px">${sev.scale} · ${BOB.LT(sev.scale, sev.tier)} · ${BOB.L('index')} ${sev.index}</div></div>
+      <div><div style="color:var(--ink2);font-size:12px">${BOB.L('Bust–Blow Index')}</div>
         <div style="font-size:26px;font-weight:800;color:${bbiColor}">${bbi>0?'+':''}${bbi}</div></div>
     </div>
-    <h2 class="sec">Dial the outcome</h2>
+    <h2 class="sec">${BOB.L('Dial the outcome')}</h2>
     <input id="slider" type="range" min="-3" max="3" step="1" value="${sliderPos}" style="width:100%">
     <div style="display:flex;justify-content:space-between;color:var(--ink2);font-size:11px">
-      <span>Big Bust</span><span>Bullseye</span><span>Big Blow</span></div>
+      <span>${BOB.L('Big Bust')}</span><span>${BOB.L('Bullseye')}</span><span>${BOB.L('Big Blow')}</span></div>
     <div style="margin-top:6px"><select id="sliderSel">${stops}</select></div>
-    <h2 class="sec">Region &amp; footprint</h2>
+    <h2 class="sec">${BOB.L('Region & footprint').replace('&','&amp;')}</h2>
     ${BOB.renderMap(col.region, fc.type)}
-    <h2 class="sec">Narrative</h2>
-    <p style="max-width:640px">${BOB.narrative(col, diag, cls, fc, res)}</p>
+    <h2 class="sec">${BOB.L('Narrative')}</h2>
+    <p style="max-width:640px">${BOB.lang==='yooper' ? BOB.narrativeYooper(col, diag, cls, fc, res) : BOB.narrative(col, diag, cls, fc, res)}</p>
     ${(function(){ const w=BOB.warnings(col); return w.length
         ? `<div style="margin-top:10px;padding:8px 10px;border:1px solid var(--severe);border-radius:6px;color:var(--severe);font-size:12px">⚠ ${w.join(' ')}</div>`
         : ''; })()}`;
@@ -866,6 +974,7 @@ BOB.sliderPos = 0;
 BOB.render = function(){
   const inputs=document.getElementById('inputs');
   const results=document.getElementById('results');
+  BOB._applyChrome();
   inputs.innerHTML = BOB.buildInputs();
   const sim = BOB.simulate(BOB.state);
   results.innerHTML = BOB.renderReport(sim, BOB.sliderPos);
@@ -879,6 +988,7 @@ BOB._wire = function(){
   const sl=document.getElementById('slider'); if(sl) sl.addEventListener('input', ()=>{ BOB.sliderPos=parseInt(sl.value,10); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
   const ss=document.getElementById('sliderSel'); if(ss) ss.addEventListener('change', ()=>{ BOB.sliderPos=parseInt(ss.value,10); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
   const rnd=document.getElementById('randomize'); if(rnd) rnd.addEventListener('click', ()=>{ BOB.state=BOB.randomColumn(); BOB.render(); });
+  const lt=document.getElementById('langToggle'); if(lt) lt.onclick = ()=>BOB.setLang(BOB.lang==='yooper'?'en':'yooper');
   const rst=document.getElementById('reset'); if(rst) rst.addEventListener('click', ()=>{ BOB.state=JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN)); BOB.sliderPos=0; BOB.render(); });
 };
 // boot (skip when running selftest)
@@ -892,6 +1002,27 @@ window.__bobTests.push((t) => {
   t('report shows forecast + actual + BBI', /Official forecast/.test(html) && /Bust–Blow Index/.test(html) && /id="slider"/.test(html));
   const blow=BOB.renderReport(sim, 3), bust=BOB.renderReport(sim,-3);
   t('report reflects slider label', /Big Blow/.test(blow) && /Big Bust/.test(bust));
+});
+
+window.__bobTests.push((t) => {
+  t('selftest runs in English', BOB.lang==='en');
+  const sim=BOB.simulate(BOB.DEFAULT_COLUMN);
+  const en=BOB.renderReport(sim, 3);
+  BOB.lang='yooper';
+  let yp, inp, narr;
+  try {
+    yp=BOB.renderReport(sim, 3); inp=BOB.buildInputs();
+    const res=BOB.resolve(sim.fc, sim.diag, 3);
+    narr=BOB.narrativeYooper(sim.col, sim.diag, sim.cls, sim.fc, res);
+  } finally { BOB.lang='en'; }
+  t('yooper report swaps the words', /What dey said/.test(yp) && /Big Ol’ Blow/.test(yp) && !/Official forecast/.test(yp));
+  t('yooper inputs swap the words', /Da air, straight up/.test(inp) && /popple stick/.test(inp));
+  t('yooper narrative says eh', /\beh\b/.test(narr) && narr.indexOf(sim.region.name)>=0);
+  const nums=h=>(h.replace(/<[^>]*>/g,' ').match(/-?\d+(\.\d+)?/g)||[]).join(',');
+  const strip=h=>h.replace(/<p style="max-width:640px">[\s\S]*?<\/p>/,'');
+  t('same numbers in both languages', nums(strip(en))===nums(strip(yp)));
+  t('every slider stop has a yooper label', BOB.SLIDER_STOPS.every(s=>Object.prototype.hasOwnProperty.call(BOB.YOOPER,s.label)));
+  t('back to English after the test', /Official forecast/.test(BOB.renderReport(sim,0)));
 });
 
 /* ================= SELF-TEST HARNESS ================= */
