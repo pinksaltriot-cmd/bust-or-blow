@@ -98,7 +98,7 @@ BOB.REGIONS = [
   {key:'nplains',name:'Northern Plains',     cx:500, cy:150, clim:{snow:1.3, ice:1.0, rain:0.9, severe:1.2, wind:1.4, cold:1.5}},
   {key:'splains',name:'Southern Plains',     cx:520, cy:360, clim:{snow:0.8, ice:1.2, rain:1.0, severe:1.6, wind:1.3, cold:0.9}},
   {key:'umidw',  name:'Upper Midwest',       cx:600, cy:150, clim:{snow:1.4, ice:1.1, rain:1.0, severe:1.1, wind:1.2, cold:1.5}},
-  {key:'glakes', name:'Great Lakes',         cx:670, cy:180, clim:{snow:1.5, ice:1.1, rain:1.0, severe:1.0, wind:1.1, cold:1.3}},
+  {key:'glakes', name:'Great Lakes',         cx:670, cy:180, lake:true, clim:{snow:1.5, ice:1.1, rain:1.0, severe:1.0, wind:1.1, cold:1.3}},
   {key:'ohval',  name:'Ohio Valley',         cx:680, cy:290, clim:{snow:1.0, ice:1.2, rain:1.2, severe:1.2, wind:1.0, cold:1.0}},
   {key:'matl',   name:'Mid-Atlantic',        cx:790, cy:300, clim:{snow:1.0, ice:1.1, rain:1.2, severe:1.0, wind:1.0, cold:0.9}},
   {key:'ne',     name:'Northeast / New England', cx:850, cy:190, clim:{snow:1.4, ice:1.1, rain:1.1, severe:0.8, wind:1.2, cold:1.2}},
@@ -254,6 +254,29 @@ BOB._instability = function(col){
   const warmN = BOB._clamp01((col.levels.eye.t-40)/50);
   return BOB._clamp01(0.5*lapseN + 0.3*pwN + 0.2*warmN);
 };
+// Storm dynamics (0..1): how hard the atmosphere is working the column. A column's own
+// precipitable water is one column's worth of snow; a deep low, a strong jet and steep lapse
+// rates keep feeding and lifting fresh moisture through it. Each term is 0 for an ordinary
+// column (the default sits at 0) and saturates at an extraordinary one.
+BOB.DYN_LOW_ONSET = 5;    BOB.DYN_LOW_FULL = 40;     // mb of surface deficit below 1013
+BOB.DYN_JET_ONSET = 85;   BOB.DYN_JET_FULL = 150;    // kt at 30,000 ft
+BOB.DYN_LAPSE_ONSET = 2.2; BOB.DYN_LAPSE_FULL = 3.5; // °F per 1000 ft, surface to 18,000 ft
+BOB._ramp = (x, onset, full) => BOB._clamp01((x-onset)/(full-onset));
+BOB._dynamics = function(col){
+  const lowN   = BOB._ramp(1013 - col.levels.eye.p, BOB.DYN_LOW_ONSET, BOB.DYN_LOW_FULL);
+  const jetN   = BOB._ramp(col.levels.l30.ws, BOB.DYN_JET_ONSET, BOB.DYN_JET_FULL);
+  const lapseN = BOB._ramp(BOB._lapseRate(col), BOB.DYN_LAPSE_ONSET, BOB.DYN_LAPSE_FULL);
+  return BOB._clamp01(0.4*lowN + 0.3*jetN + 0.3*lapseN);
+};
+// Lake effect (0..1): only over a region with open lakes, and only when the air at 5,000 ft
+// is much colder than the surface. The classic threshold is a 13°C (23°F) lake-to-850 mb
+// difference; the default column's 8°F drop is the onset.
+BOB.LAKE_DROP_ONSET = 8;  BOB.LAKE_DROP_FULL = 23;   // °F, surface minus 5,000 ft
+BOB._lakeEffect = function(col){
+  const region = BOB.REGIONS.find(r=>r.key===col.region);
+  if (!region || !region.lake) return 0;
+  return BOB._ramp(col.levels.eye.t - col.levels.l5.t, BOB.LAKE_DROP_ONSET, BOB.LAKE_DROP_FULL);
+};
 // marginality drives envelope width: peaks when the setup is on a knife's edge.
 BOB._marginality = function(col, precipType){
   const sfc = col.levels.eye.t;
@@ -287,8 +310,11 @@ BOB.diagnose = function(col){
   const groundWarmth = BOB._groundWarmth(col);
   const instability = BOB._instability(col);
   const marginality = BOB._marginality(col, precipType);
+  const dynamics = BOB._dynamics(col);
+  const lakeEffect = BOB._lakeEffect(col);
   return { prof, freezingLevelFt, warmNose, precipType, lapseRate, bulkShearKt,
-           dirShearDeg, pw, windPot, soilFreeze, groundWarmth, instability, marginality };
+           dirShearDeg, pw, windPot, soilFreeze, groundWarmth, instability, marginality,
+           dynamics, lakeEffect };
 };
 
 window.__bobTests.push((t, approx) => {
@@ -444,6 +470,77 @@ window.__bobTests.push((t) => {
   t('region climatology shifts the snow score', cn.scores.snowstorm > cs.scores.snowstorm);
 });
 
+// Historic snow (40"+, "Heikki Lunta Himself") is reachable, but only by an extraordinary
+// setup: a deep low, a roaring jet and steep lapse rates on a saturated near-freezing column,
+// or cold air pouring over the open Great Lakes. An ordinary column never gets there.
+window.__bobTests.push((t) => {
+  const clone=(o)=>JSON.parse(JSON.stringify(o||BOB.DEFAULT_COLUMN));
+  const run=(c,pos)=>{ const d=BOB.diagnose(c), cl=BOB.classify(d,c.region), fc=BOB.forecast(c,d,cl);
+    const actual=BOB.resolve(fc,d,pos).actual;
+    return { d, cl, fc, actual, snow:(fc.type==='snowstorm'||fc.type==='blizzard'),
+             tier:BOB.severityFor(fc.type,actual,c.region).tier }; };
+  const inRegion=(c,key)=>Object.assign(clone(c),{region:key});
+  // saturated, near-freezing, frozen ground: the same thermodynamics in every column below
+  const calm=clone(); calm.levels.eye.t=28; calm.moisture=100;
+  calm.soil={skin:18,d2:18,d4:18,d8:19,d20:20}; calm.region='umidw';
+  // ...plus a 968 mb low, a 160 kt jet and -36°F at 18,000 ft
+  const big={levels:{
+      eye:{t:28,p:968,ws:45,wd:20},  l5:{t:16,p:845,ws:60,wd:200}, l10:{t:-4,p:700,ws:80,wd:220},
+      l18:{t:-36,p:500,ws:110,wd:240}, l30:{t:-52,p:300,ws:160,wd:250}, l40:{t:-62,p:200,ws:150,wd:255}},
+    soil:{skin:18,d2:18,d4:18,d8:19,d20:20}, moisture:100, region:'umidw'};
+  // ...or no storm at all, just air 23°F colder at 5,000 ft than at the surface
+  const lake=clone(calm); lake.levels.l5.t=5;
+
+  // Fix: a rain column is never a snowstorm, however wet it is or snowy the region.
+  const hot=clone(calm); hot.levels.eye.t=85; hot.levels.l5.t=70; hot.levels.l10.t=50; hot.levels.l18.t=20;
+  hot.region='nrock';
+  const hx=run(hot,3);
+  t('hot saturated column is rain', hx.d.precipType==='rain');
+  t('rain column scores zero as a snowstorm', hx.cl.scores.snowstorm===0 && hx.cl.scores.blizzard===0);
+  t('rain column never forecasts snowfall', !hx.snow);
+  const dryCold=clone(calm); dryCold.moisture=2;
+  t('no-precip column scores zero as a snowstorm',
+     BOB.diagnose(dryCold).precipType==='none' && run(dryCold,0).cl.scores.snowstorm===0);
+
+  // Storm dynamics: 0 for an ordinary column, 1 for the extraordinary one.
+  t('default column has no storm dynamics', BOB.diagnose(BOB.DEFAULT_COLUMN).dynamics===0);
+  t('calm column has no storm dynamics', BOB.diagnose(calm).dynamics===0);
+  t('extraordinary column has full storm dynamics', BOB.diagnose(big).dynamics===1);
+  t('ordinary snow forecast is untouched', (function(){
+     const d=BOB.diagnose(calm), ratio=8+6*BOB._clamp01((32-28)/30);
+     return run(calm,0).fc.value === BOB._roundFor('snowstorm','in', d.pw*ratio);
+  })());
+  t('storm dynamics more than double the snowfall forecast',
+     run(big,0).fc.value >= 2*run(calm,0).fc.value);
+
+  // Reach: Southern Plains to Great Lakes get there at Big Blow; an ordinary column never does.
+  ['splains','nplains','umidw','ohval','glakes'].forEach(k=>{
+    const x=run(inRegion(big,k),3);
+    t('extraordinary column is a snow event over '+k, x.snow);
+    t('extraordinary column reaches Historic at Big Blow over '+k, x.tier==='Historic');
+  });
+  t('ordinary column never reaches Historic in any region',
+     BOB.REGIONS.every(r=>run(inRegion(calm,r.key),3).tier!=='Historic'));
+  t('Bullseye on an extraordinary column stays below Historic outside the lakes',
+     run(big,0).tier!=='Historic');
+  // The deepest low the dial allows must not flip a Southern Plains blizzard to "high wind".
+  const deep=inRegion(big,'splains'); deep.levels.eye.p=940;
+  t('deepest low over the Southern Plains is still a snow event', run(deep,3).snow);
+  t('rare-snow regions still do not get there', !run(inRegion(big,'gulf'),3).snow);
+
+  // Great Lakes: lake effect stacks on top of storm dynamics.
+  t('lake effect is 0 away from the lakes', BOB.diagnose(inRegion(lake,'umidw')).lakeEffect===0);
+  t('lake effect needs cold air aloft', BOB.diagnose(inRegion(calm,'glakes')).lakeEffect===0);
+  t('lake effect is full at a 23°F drop to 5,000 ft', BOB.diagnose(inRegion(lake,'glakes')).lakeEffect===1);
+  t('lake effect alone reaches Historic at Big Blow over the Great Lakes',
+     run(inRegion(lake,'glakes'),3).tier==='Historic' && run(inRegion(lake,'umidw'),3).tier!=='Historic');
+  const bigLake=clone(big); bigLake.levels.l5.t=5;
+  t('Great Lakes forecast beats the same column elsewhere',
+     run(inRegion(bigLake,'glakes'),0).fc.value > run(inRegion(bigLake,'umidw'),0).fc.value);
+  t('Great Lakes reaches Historic at Moderate Blow',
+     run(inRegion(bigLake,'glakes'),1).tier==='Historic' && run(inRegion(bigLake,'umidw'),1).tier!=='Historic');
+});
+
 window.__bobTests.push((t) => {
   // BBI: -100 at Big Bust, 0 at Bullseye, +100 at Big Blow, monotonic
   const bbis=[-3,-2,-1,0,1,2,3].map(BOB.bbi);
@@ -497,8 +594,14 @@ BOB.classify = function(diag, regionKey){
   const shearN = BOB._clamp01(diag.bulkShearKt/70);
   const dirN = BOB._clamp01(diag.dirShearDeg/90);   // veering with height favors rotation
   const s = {};
-  s.snowstorm  = cl.snow  * (0.55*snowy + 0.6*BOB._clamp01(diag.pw/1.5) + 0.35*cold);
-  s.blizzard   = cl.snow  * cl.wind * (snowy>0?1:0) * (0.6*BOB._clamp01(diag.pw/1.2) + 0.8*lowWind + 0.4*cold);
+  // Both snow types are gated on frozen precip actually falling: moisture alone used to
+  // score a snowstorm, so a saturated 85°F column in a snowy region forecast 20" of snow.
+  // Storm dynamics count toward both, so the deep low that makes a blizzard historic does
+  // not hand the event to "high wind" instead.
+  const snowGate = snowy>0 ? 1 : 0;
+  const dyn = diag.dynamics || 0;
+  s.snowstorm  = cl.snow  * snowGate * (0.55*snowy + 0.6*BOB._clamp01(diag.pw/1.5) + 0.35*cold + 0.5*dyn);
+  s.blizzard   = cl.snow  * cl.wind * snowGate * (0.6*BOB._clamp01(diag.pw/1.2) + 0.8*lowWind + 0.4*cold + 0.5*dyn);
   s.icestorm   = cl.ice   * (diag.warmNose?1:0) * (0.8 + 0.5*BOB._clamp01(diag.pw/1.2));
   s.rainflood  = cl.rain  * ((diag.precipType==='rain'||diag.precipType==='zr')?1:0.2) * (0.9*BOB._clamp01(diag.pw/2.0));
   // gated: shear and directional shear only count once there is instability and moisture
@@ -522,6 +625,11 @@ BOB._roundFor = function(type, unit, v){
   if (type === 'icestorm') return +v.toFixed(2);
   return +v.toFixed(1);   // in, °F, EF
 };
+// Snowfall multipliers at full storm dynamics / full lake effect. Tuned so a saturated
+// near-freezing column reaches Historic (40") at Big Blow on either one alone, and at
+// Moderate Blow over the Great Lakes with both.
+BOB.SNOW_DYN_GAIN  = 1.2;
+BOB.SNOW_LAKE_GAIN = 1.1;
 BOB.forecast = function(col, diag, cls){
   const type = cls.dominant;
   const pw = diag.pw;
@@ -532,7 +640,10 @@ BOB.forecast = function(col, diag, cls){
       const ratio = 8 + 6*BOB._clamp01((32-col.levels.eye.t)/30);      // 8:1 .. 14:1
       const surfKeep = 0.5 + 0.5*BOB._clamp01((34-col.soil.skin)/14);  // warm skin melts
       const keep = surfKeep * (1 - 0.3*diag.groundWarmth);             // warm deep soil melts from below
-      const val = pw * ratio * keep;
+      // pw*ratio is one column's worth of snow. Storm dynamics and lake effect each add
+      // more on top (additive, so the two together stack without compounding).
+      const boost = 1 + BOB.SNOW_DYN_GAIN*(diag.dynamics||0) + BOB.SNOW_LAKE_GAIN*(diag.lakeEffect||0);
+      const val = pw * ratio * keep * boost;
       return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Snowfall' };
     }
     case 'icestorm': {
@@ -665,6 +776,14 @@ BOB.severityFor = function(type, value, regionKey){
   }
 };
 
+// Which snow boosts earned a sentence in the narrative: only snow events, and only once the
+// boost is big enough to notice (a fifth of the way to full).
+BOB.NARRATE_BOOST_MIN = 0.2;
+BOB._snowBoosts = function(diag, fc){
+  const snow = fc.type==='snowstorm' || fc.type==='blizzard';
+  return { dynamics: snow && (diag.dynamics||0)   >= BOB.NARRATE_BOOST_MIN,
+           lake:     snow && (diag.lakeEffect||0) >= BOB.NARRATE_BOOST_MIN };
+};
 BOB.TYPE_LABELS = {snowstorm:'snowstorm', blizzard:'blizzard', icestorm:'ice storm',
   rainflood:'rain event', severe:'severe convective outbreak', highwind:'high-wind event',
   coldoutbreak:'cold-air outbreak'};
@@ -684,6 +803,9 @@ BOB.narrative = function(col, diag, cls, fc, res){
     + `${fc.value}${isTemp?'°F':' '+fc.unit} (${fc.label.toLowerCase()}), with ${pt} the dominant type. `;
   s += `You dialed it to ${res.stop.label} — the event ${dir} to ${res.actual}${isTemp?'°F':' '+fc.unit} `
     + `(${deltaTxt}). `;
+  const boosts = BOB._snowBoosts(diag, fc);
+  if (boosts.dynamics) s += `Powerful storm dynamics — a deep low, a strong jet and steep lapse rates — kept feeding the column and drove the snowfall up. `;
+  if (boosts.lake) s += `Cold air pouring over the open lakes piled lake-effect snow on top. `;
   if (cls.secondary) s += `A secondary ${BOB.TYPE_LABELS[cls.secondary]} threat lurked in the setup. `;
   if (diag.marginality>0.6) s += `The setup was marginal, so the envelope was wide — this outcome was well within reach. `;
   else s += `The setup was robust, so outcomes clustered near the forecast. `;
@@ -836,6 +958,9 @@ BOB.narrativeYooper = function(col, diag, cls, fc, res){
     + `${fc.value}${isTemp?'°F':' '+fc.unit} (${BOB.L(fc.label).toLowerCase()}), mostly ${pt}. `;
   s += `Ya cranked ’er ta ${BOB.L(res.stop.label)} — da ting ${dir}, ${res.actual}${isTemp?'°F':' '+fc.unit} `
     + `(${deltaTxt}). `;
+  const boosts = BOB._snowBoosts(diag, fc);
+  if (boosts.dynamics) s += `Dat storm had some real muscle — deep low, screamin’ jet, steep lapse rates — an’ she kept feedin’ da column, so da snow piled right up. `;
+  if (boosts.lake) s += `Cold air comin’ across da open lakes piled lake-effect snow on top o’ dat, holy wah. `;
   if (cls.secondary) s += `Dere was a ${BOB.YOOPER_TYPE[cls.secondary]} lurkin’ in dere too, ya know. `;
   if (diag.marginality>0.6) s += `Setup was real touchy, so dat envelope was wide open — dis one was well within reach, eh. `;
   else s += `Setup was solid, so she stayed pretty close ta da forecast, yah. `;
@@ -855,6 +980,32 @@ BOB._applyChrome = function(){
   const b = document.getElementById('langToggle');
   if (b) b.textContent = BOB.lang==='yooper' ? '🗣️ English' : '🗣️ Yoopanese';
 };
+
+// The narrative says why a snow forecast ran past one column's worth: storm dynamics, lake
+// effect, or both — in both languages, and only when they actually contributed.
+window.__bobTests.push((t) => {
+  const clone=(o)=>JSON.parse(JSON.stringify(o));
+  const tell=(c,yoop)=>{ const d=BOB.diagnose(c), cl=BOB.classify(d,c.region), fc=BOB.forecast(c,d,cl);
+    const res=BOB.resolve(fc,d,0); return (yoop?BOB.narrativeYooper:BOB.narrative)(c,d,cl,fc,res); };
+  const big={levels:{
+      eye:{t:28,p:968,ws:45,wd:20},  l5:{t:16,p:845,ws:60,wd:200}, l10:{t:-4,p:700,ws:80,wd:220},
+      l18:{t:-36,p:500,ws:110,wd:240}, l30:{t:-52,p:300,ws:160,wd:250}, l40:{t:-62,p:200,ws:150,wd:255}},
+    soil:{skin:18,d2:18,d4:18,d8:19,d20:20}, moisture:100, region:'umidw'};
+  const lake=clone(BOB.DEFAULT_COLUMN); lake.levels.eye.t=28; lake.levels.l5.t=5; lake.moisture=100;
+  lake.soil=clone(big.soil); lake.region='glakes';
+  const both=clone(big); both.levels.l5.t=5; both.region='glakes';
+  const plain=clone(BOB.DEFAULT_COLUMN);
+  t('narrative credits storm dynamics', /storm dynamics/i.test(tell(big)) && !/lake-effect/i.test(tell(big)));
+  t('narrative credits lake effect', /lake-effect/i.test(tell(lake)) && !/storm dynamics/i.test(tell(lake)));
+  t('narrative credits both when both contribute', /storm dynamics/i.test(tell(both)) && /lake-effect/i.test(tell(both)));
+  t('ordinary narrative mentions neither', !/storm dynamics|lake-effect/i.test(tell(plain)));
+  t('yooper narrative credits storm dynamics', /real muscle/.test(tell(big,true)) && !/lake-effect/i.test(tell(big,true)));
+  t('yooper narrative credits lake effect', /lake-effect/i.test(tell(lake,true)) && !/real muscle/.test(tell(lake,true)));
+  t('ordinary yooper narrative mentions neither', !/real muscle|lake-effect/i.test(tell(plain,true)));
+  // a non-snow event never gets the snow sentence, however dynamic the column
+  const windy=clone(big); windy.region='gulf';
+  t('non-snow event gets no snow-boost sentence', !/storm dynamics|lake-effect/i.test(tell(windy)));
+});
 
 /* ================= UI (Tasks 12-13) ================= */
 BOB.state = JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN));
