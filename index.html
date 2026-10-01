@@ -34,7 +34,8 @@
   <span style="font-size:20px">🎯</span>
   <h1 id="apptitle">Bust or Blow</h1>
   <span class="sub" id="appsub">engineer a column · issue a forecast · dial the outcome</span>
-  <button id="langToggle" style="margin-left:auto;font-size:12px;padding:5px 10px">🗣️ Yoopanese</button>
+  <button id="challengeToggle" style="margin-left:auto;font-size:12px;padding:5px 10px">🏆 Challenge Mode</button>
+  <button id="langToggle" style="font-size:12px;padding:5px 10px">🗣️ Yoopanese</button>
 </header>
 
 <div class="app" id="app">
@@ -56,7 +57,7 @@ window.__bobTests.push((t) => {
      BOB.LEVELS.map(l=>l.ftAlt).join(',')==='0,5000,10000,18000,30000,40000');
   t('5 soil depths', BOB.SOIL.length===5 &&
      BOB.SOIL.map(s=>s.inches).join(',')==='0,2,4,8,20');
-  t('14 regions with clim', BOB.REGIONS.length===14 &&
+  t('15 regions with clim', BOB.REGIONS.length===15 &&
      BOB.REGIONS.every(r=>r.key && r.name && r.clim &&
        typeof r.clim.snow==='number' && typeof r.clim.severe==='number'));
   t('7 slider stops, monotonic pct', (function(){
@@ -104,6 +105,11 @@ BOB.REGIONS = [
   {key:'ne',     name:'Northeast / New England', cx:850, cy:190, clim:{snow:1.4, ice:1.1, rain:1.1, severe:0.8, wind:1.2, cold:1.2}},
   {key:'se',     name:'Southeast',           cx:760, cy:400, clim:{snow:0.5, ice:0.9, rain:1.3, severe:1.3, wind:1.1, cold:0.7}},
   {key:'gulf',   name:'Gulf Coast',          cx:640, cy:470, clim:{snow:0.3, ice:0.6, rain:1.5, severe:1.4, wind:1.3, cold:0.6}},
+  // The 15th region: the whole continent at once. Locked until Challenge Mode is beaten.
+  // It holds the lakes, takes every climatology at its continental maximum, and turns
+  // storm dynamics into megastorms (see BOB.MEGA_GAIN).
+  {key:'continental', name:'Continental',    cx:520, cy:290, lake:true, mega:true, locked:true,
+     clim:{snow:1.5, ice:1.2, rain:1.6, severe:1.6, wind:1.4, cold:1.5}},
 ];
 BOB.SLIDER_STOPS = [
   {pos:-3, key:'bigbust', label:'Big Bust',      pct:0.05},
@@ -541,6 +547,64 @@ window.__bobTests.push((t) => {
      run(inRegion(bigLake,'glakes'),1).tier==='Historic' && run(inRegion(bigLake,'umidw'),1).tier!=='Historic');
 });
 
+// Challenge engine: the level boost (col.boost), the locked 15th region (Continental) and
+// its megastorms, and the tier ranks the challenge goals are judged on.
+window.__bobTests.push((t, approx) => {
+  const clone=(o)=>JSON.parse(JSON.stringify(o||BOB.DEFAULT_COLUMN));
+  const F=(c)=>{ const d=BOB.diagnose(c); return BOB.forecast(c,d,BOB.classify(d,c.region)); };
+  const run=(c,pos)=>{ const d=BOB.diagnose(c), cl=BOB.classify(d,c.region), fc=BOB.forecast(c,d,cl);
+    const actual=BOB.resolve(fc,d,pos).actual;
+    return { fc, actual, tier:BOB.severityFor(fc.type,actual,c.region).tier }; };
+  const inRegion=(c,key)=>Object.assign(clone(c),{region:key});
+  const withBoost=(c,b)=>Object.assign(clone(c),{boost:b});
+  const calm=clone(); calm.levels.eye.t=28; calm.moisture=100;
+  calm.soil={skin:18,d2:18,d4:18,d8:19,d20:20}; calm.region='umidw';
+  const bigLake={levels:{
+      eye:{t:28,p:968,ws:45,wd:20},  l5:{t:5,p:845,ws:60,wd:200}, l10:{t:-4,p:700,ws:80,wd:220},
+      l18:{t:-36,p:500,ws:110,wd:240}, l30:{t:-52,p:300,ws:160,wd:250}, l40:{t:-62,p:200,ws:150,wd:255}},
+    soil:{skin:18,d2:18,d4:18,d8:19,d20:20}, moisture:100, region:'umidw'};
+
+  // level boost
+  const base=F(calm).value;
+  t('boost of 1 changes nothing', F(withBoost(calm,1)).value===base);
+  t('boost scales an amount forecast', approx(F(withBoost(calm,1.3)).value, base*1.3, 0.06));
+  const co=clone(); co.levels.eye.t=-15; co.moisture=5; co.soil.skin=5;
+  t('boost makes a cold outbreak colder', F(co).type==='coldoutbreak' &&
+     approx(F(withBoost(co,1.5)).value, F(co).value-10, 0.11));
+  const sv=clone(); sv.levels.eye.t=88; sv.levels.l18.t=-25; sv.moisture=100;
+  sv.levels.eye.ws=15; sv.levels.l30.ws=120; sv.levels.l30.wd=270; sv.region='splains';
+  t('boost never pushes a tornado past EF5', F(sv).type==='severe' && F(withBoost(sv,3)).value===5);
+
+  // Continental
+  t('only Continental is locked', BOB.REGIONS.filter(r=>r.locked).map(r=>r.key).join()==='continental');
+  const cont=BOB.REGIONS.find(r=>r.key==='continental');
+  t('Continental is the megastorm region and holds the lakes',
+     !!cont && cont.name==='Continental' && cont.mega===true && cont.lake===true);
+  t('a megastorm needs storm dynamics', F(inRegion(calm,'continental')).value===base);
+  t('Continental triples a full-dynamics forecast',
+     approx(F(inRegion(bigLake,'continental')).value, 3*F(inRegion(bigLake,'glakes')).value, 0.2));
+  t('Megastorm is the snow tier above Historic',
+     BOB.severityFor('snowstorm',149,'continental').tier==='Historic' &&
+     BOB.severityFor('snowstorm',150,'continental').tier==='Megastorm');
+  t('Continental megastorm vastly eclipses the lake-effect superstorm',
+     run(inRegion(bigLake,'continental'),3).actual >= 2.5*run(inRegion(bigLake,'glakes'),3).actual);
+  t('Continental reaches Megastorm at Big Blow', run(inRegion(bigLake,'continental'),3).tier==='Megastorm');
+  t('no other region reaches Megastorm, even at full boost',
+     BOB.REGIONS.filter(r=>!r.mega).every(r=>run(withBoost(inRegion(bigLake,r.key),1.5),3).tier!=='Megastorm'));
+
+  // tier ranks
+  t('tier rank orders the snow scale', BOB.tierRank('snowstorm','Historic') > BOB.tierRank('blizzard','Crippling'));
+  t('tier rank orders the cold scale by severity',
+     BOB.tierRank('coldoutbreak','Life-threatening') > BOB.tierRank('coldoutbreak','Arctic'));
+  t('tier rank reads EF numbers', BOB.tierRank('severe','EF5')===5 && BOB.tierRank('severe','EF0')===0);
+  t('unknown tier ranks -1', BOB.tierRank('icestorm','Megastorm')===-1);
+  t('every tier severityFor returns has a rank', (function(){
+     const probes={snowstorm:[0,3,8,15,30,50,200], icestorm:[0,.15,.3,.7,2], rainflood:[0,2,4,7,12],
+       severe:[0,1,2,3,4,5], highwind:[10,40,55,70,90], coldoutbreak:[50,20,0,-10,-40]};
+     return Object.keys(probes).every(ty=>probes[ty].every(v=>BOB.tierRank(ty,BOB.severityFor(ty,v,'umidw').tier)>=0));
+  })());
+});
+
 window.__bobTests.push((t) => {
   // BBI: -100 at Big Bust, 0 at Bullseye, +100 at Big Blow, monotonic
   const bbis=[-3,-2,-1,0,1,2,3].map(BOB.bbi);
@@ -630,9 +694,30 @@ BOB._roundFor = function(type, unit, v){
 // Moderate Blow over the Great Lakes with both.
 BOB.SNOW_DYN_GAIN  = 1.2;
 BOB.SNOW_LAKE_GAIN = 1.1;
+// Power scales every forecast. Two sources, multiplied:
+//   - col.boost: the Challenge Mode level boost (1 = none, the sandbox default).
+//   - megastorm: over a `mega` region (Continental) storm dynamics multiply the event again,
+//     up to 1 + MEGA_GAIN. An ordinary column gets nothing, same as everywhere else.
+// Amounts (in, kt) multiply; EF multiplies but stays on its 0-5 scale; temperature gets
+// COLD_POWER_DEG colder per +1.0 of power.
+BOB.MEGA_GAIN = 2;
+BOB.COLD_POWER_DEG = 20;
+BOB._power = function(col, diag){
+  const region = BOB.REGIONS.find(r=>r.key===col.region);
+  const mega = (region && region.mega) ? 1 + BOB.MEGA_GAIN*(diag.dynamics||0) : 1;
+  const boost = (typeof col.boost==='number' && col.boost>0) ? col.boost : 1;
+  return boost * mega;
+};
+BOB._applyPower = function(val, unit, power){
+  if (unit === '°F') return val - BOB.COLD_POWER_DEG*(power-1);
+  if (unit === 'EF') return Math.min(5, val*power);
+  return val*power;
+};
 BOB.forecast = function(col, diag, cls){
   const type = cls.dominant;
   const pw = diag.pw;
+  const power = BOB._power(col, diag);
+  const fin = (unit, val) => BOB._roundFor(type, unit, BOB._applyPower(val, unit, power));
   switch(type){
     case 'snowstorm':
     case 'blizzard': {
@@ -644,15 +729,15 @@ BOB.forecast = function(col, diag, cls){
       // more on top (additive, so the two together stack without compounding).
       const boost = 1 + BOB.SNOW_DYN_GAIN*(diag.dynamics||0) + BOB.SNOW_LAKE_GAIN*(diag.lakeEffect||0);
       const val = pw * ratio * keep * boost;
-      return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Snowfall' };
+      return { type, unit:'in', value:fin('in',val), label:'Snowfall' };
     }
     case 'icestorm': {
       const val = pw * 0.35 * (col.soil.skin<=30?1:0.6);
-      return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Ice accretion' };
+      return { type, unit:'in', value:fin('in',val), label:'Ice accretion' };
     }
     case 'rainflood': {
       const val = pw * 1.6;
-      return { type, unit:'in', value:BOB._roundFor(type,'in',val), label:'Rainfall' };
+      return { type, unit:'in', value:fin('in',val), label:'Rainfall' };
     }
     case 'severe': {
       // same atmospheric ceiling as the classifier: no instability + moisture, no tornado
@@ -660,15 +745,15 @@ BOB.forecast = function(col, diag, cls){
                 * BOB._clamp01(0.5*diag.instability
                              + 0.3*BOB._clamp01(diag.bulkShearKt/70)
                              + 0.2*BOB._clamp01(diag.dirShearDeg/90));
-      return { type, unit:'EF', value:BOB._roundFor(type,'EF',val), label:'Tornado potential (EF)' };
+      return { type, unit:'EF', value:fin('EF',val), label:'Tornado potential (EF)' };
     }
     case 'highwind': {
       const val = 20 + diag.windPot*0.9;
-      return { type, unit:'kt', value:BOB._roundFor(type,'kt',val), label:'Peak gust' };
+      return { type, unit:'kt', value:fin('kt',val), label:'Peak gust' };
     }
     case 'coldoutbreak': {
       const val = col.levels.eye.t - 6*diag.soilFreeze;
-      return { type, unit:'°F', value:BOB._roundFor(type,'°F',val), label:'Low temperature' };
+      return { type, unit:'°F', value:fin('°F',val), label:'Low temperature' };
     }
     default:
       return { type, unit:'', value:0, label:'Event' };
@@ -739,35 +824,52 @@ BOB._climFactor = function(type, regionKey){
   const f = (region && key) ? region.clim[key] : 1;
   return (typeof f==='number' && f>0) ? f : 1;
 };
+// Tier tables, ascending in severity. Shared by severityFor and by tierRank, which the
+// Challenge Mode goals are judged on. Megastorm (150"+) sits above Historic and is only
+// reachable over Continental.
+BOB.TIER_PAIRS = {
+  snow: [[0,'Nuisance'],[2,'Minor'],[6,'Notable'],[12,'Major'],[24,'Crippling'],[40,'Historic'],[150,'Megastorm']],
+  ice:  [[0,'Glaze'],[0.1,'Minor'],[0.25,'Damaging'],[0.5,'Crippling'],[1.0,'Catastrophic']],
+  rain: [[0,'Light'],[1,'Soaking'],[3,'Heavy'],[6,'Flooding'],[10,'Catastrophic']],
+  severe: [[0,'EF0'],[1,'EF1'],[2,'EF2'],[3,'EF3'],[4,'EF4'],[5,'EF5']],
+  wind: [[0,'Breezy'],[35,'Windy'],[50,'High Wind'],[65,'Damaging'],[85,'Extreme']],
+  // colder = more severe: thresholds are "at or below"
+  cold: [[100,'Chilly'],[32,'Cold'],[10,'Hard Freeze'],[-5,'Arctic'],[-25,'Life-threatening']],
+};
+// 0-based rank of a tier on its event type's scale; -1 if the tier is not on that scale.
+BOB.tierRank = function(type, tier){
+  const pairs = BOB.TIER_PAIRS[BOB.SEVERITY_CLIM_KEY[type]] || [];
+  return pairs.findIndex(p=>p[1]===tier);
+};
 BOB.severityFor = function(type, value, regionKey){
   const cf = BOB._climFactor(type, regionKey);
   switch(type){
     case 'snowstorm':
     case 'blizzard': {
-      const {index,tier}=BOB._tier(value, [[0,'Nuisance'],[2,'Minor'],[6,'Notable'],[12,'Major'],[24,'Crippling'],[40,'Historic']], 48*cf);
+      const {index,tier}=BOB._tier(value, BOB.TIER_PAIRS.snow, 48*cf);
       return { scale:'RSI-style', index, tier };
     }
     case 'icestorm': {
-      const {index,tier}=BOB._tier(value, [[0,'Glaze'],[0.1,'Minor'],[0.25,'Damaging'],[0.5,'Crippling'],[1.0,'Catastrophic']], 1.5*cf);
+      const {index,tier}=BOB._tier(value, BOB.TIER_PAIRS.ice, 1.5*cf);
       return { scale:'Ice', index, tier };
     }
     case 'rainflood': {
-      const {index,tier}=BOB._tier(value, [[0,'Light'],[1,'Soaking'],[3,'Heavy'],[6,'Flooding'],[10,'Catastrophic']], 15*cf);
+      const {index,tier}=BOB._tier(value, BOB.TIER_PAIRS.rain, 15*cf);
       return { scale:'Rain', index, tier };
     }
     case 'severe': {
-      const tiers=['EF0','EF1','EF2','EF3','EF4','EF5'];
+      const tiers=BOB.TIER_PAIRS.severe.map(p=>p[1]);
       const ef=Math.max(0,Math.min(5,Math.round(value)));
       const index=Math.max(0,Math.min(100,Math.round(100*ef/(5*cf))));
       return { scale:'EF', index, tier:tiers[ef] };
     }
     case 'highwind': {
-      const {index,tier}=BOB._tier(value, [[0,'Breezy'],[35,'Windy'],[50,'High Wind'],[65,'Damaging'],[85,'Extreme']], 120*cf);
+      const {index,tier}=BOB._tier(value, BOB.TIER_PAIRS.wind, 120*cf);
       return { scale:'Wind', index, tier };
     }
     case 'coldoutbreak': {
       // colder = more severe; invert
-      const pairs=[[100,'Chilly'],[32,'Cold'],[10,'Hard Freeze'],[-5,'Arctic'],[-25,'Life-threatening']];
+      const pairs=BOB.TIER_PAIRS.cold;
       let tier='Chilly'; for(const [thr,label] of pairs){ if(value<=thr) tier=label; }
       const index=Math.max(0,Math.min(100,Math.round(100*(40-value)/(80*cf))));
       return { scale:'Cold', index, tier };
@@ -776,19 +878,29 @@ BOB.severityFor = function(type, value, regionKey){
   }
 };
 
-// Which snow boosts earned a sentence in the narrative: only snow events, and only once the
-// boost is big enough to notice (a fifth of the way to full).
+// Which boosts earned a sentence in the narrative. The two snow boosts: only snow events, and
+// only once the boost is big enough to notice (a fifth of the way to full).
 BOB.NARRATE_BOOST_MIN = 0.2;
-BOB._snowBoosts = function(diag, fc){
+// A megastorm (any event type, Continental only) gets its own sentence on the same threshold.
+BOB._boostNotes = function(col, diag, fc){
   const snow = fc.type==='snowstorm' || fc.type==='blizzard';
-  return { dynamics: snow && (diag.dynamics||0)   >= BOB.NARRATE_BOOST_MIN,
-           lake:     snow && (diag.lakeEffect||0) >= BOB.NARRATE_BOOST_MIN };
+  const region = BOB.REGIONS.find(r=>r.key===col.region);
+  const dyn = (diag.dynamics||0) >= BOB.NARRATE_BOOST_MIN;
+  return { dynamics: snow && dyn,
+           lake:     snow && (diag.lakeEffect||0) >= BOB.NARRATE_BOOST_MIN,
+           mega:     !!(region && region.mega) && dyn };
+};
+// How the narrative names the place ("Over the <place>, ..."). Continental reads as the whole
+// continent rather than "the Continental".
+BOB._placeName = function(regionKey, fallback){
+  const r = BOB.REGIONS.find(r=>r.key===regionKey);
+  return !r ? fallback : r.mega ? 'whole continent' : r.name;
 };
 BOB.TYPE_LABELS = {snowstorm:'snowstorm', blizzard:'blizzard', icestorm:'ice storm',
   rainflood:'rain event', severe:'severe convective outbreak', highwind:'high-wind event',
   coldoutbreak:'cold-air outbreak'};
 BOB.narrative = function(col, diag, cls, fc, res){
-  const region = (BOB.REGIONS.find(r=>r.key===col.region)||{name:'the region'}).name;
+  const region = BOB._placeName(col.region, 'the region');
   const label = BOB.TYPE_LABELS[cls.dominant] || 'event';
   const isTemp = fc.unit==='°F';
   const dir = res.stop.pos<0 ? (isTemp?'busted milder':'busted')
@@ -803,7 +915,8 @@ BOB.narrative = function(col, diag, cls, fc, res){
     + `${fc.value}${isTemp?'°F':' '+fc.unit} (${fc.label.toLowerCase()}), with ${pt} the dominant type. `;
   s += `You dialed it to ${res.stop.label} — the event ${dir} to ${res.actual}${isTemp?'°F':' '+fc.unit} `
     + `(${deltaTxt}). `;
-  const boosts = BOB._snowBoosts(diag, fc);
+  const boosts = BOB._boostNotes(col, diag, fc);
+  if (boosts.mega) s += `This was a continental megastorm: the whole continent fed it. `;
   if (boosts.dynamics) s += `Powerful storm dynamics — a deep low, a strong jet and steep lapse rates — kept feeding the column and drove the snowfall up. `;
   if (boosts.lake) s += `Cold air pouring over the open lakes piled lake-effect snow on top. `;
   if (cls.secondary) s += `A secondary ${BOB.TYPE_LABELS[cls.secondary]} threat lurked in the setup. `;
@@ -843,12 +956,202 @@ window.__bobTests.push((t) => {
   t('clean default no pressure warning', !BOB.warnings(BOB.DEFAULT_COLUMN).some(m=>/Pressure/.test(m)));
 });
 
+// Challenge Mode rules: five levels of three goals, a boost per level beaten, and Continental
+// unlocked at the end. SOL holds one winning column per goal (found by search at that level's
+// boost), so the suite proves every level can actually be beaten.
+window.__bobTests.push((t, approx) => {
+  const SOL = {
+    '1a':{"col":{"levels":{"eye":{"t":34,"p":967,"ws":29,"wd":45},"l5":{"t":10,"p":845,"ws":19,"wd":305},"l10":{"t":-2,"p":700,"ws":80,"wd":80},"l18":{"t":-37,"p":500,"ws":126,"wd":75},"l30":{"t":-53,"p":300,"ws":161,"wd":255},"l40":{"t":-59,"p":200,"ws":103,"wd":165}},"soil":{"skin":18,"d2":19,"d4":19,"d8":20,"d20":21},"moisture":100,"region":"umidw"},"pos":3},
+    '1b':{"col":{"levels":{"eye":{"t":91,"p":970,"ws":2,"wd":250},"l5":{"t":105,"p":845,"ws":40,"wd":175},"l10":{"t":94,"p":700,"ws":81,"wd":55},"l18":{"t":59,"p":500,"ws":62,"wd":250},"l30":{"t":31,"p":300,"ws":74,"wd":50},"l40":{"t":22,"p":200,"ws":97,"wd":45}},"soil":{"skin":3,"d2":4,"d4":4,"d8":5,"d20":6},"moisture":100,"region":"pnw"},"pos":3},
+    '1c':{"col":{"levels":{"eye":{"t":-40,"p":1016,"ws":21,"wd":235},"l5":{"t":-58,"p":845,"ws":73,"wd":330},"l10":{"t":-77,"p":700,"ws":75,"wd":20},"l18":{"t":-60,"p":500,"ws":109,"wd":30},"l30":{"t":-60,"p":300,"ws":100,"wd":155},"l40":{"t":-60,"p":200,"ws":60,"wd":55}},"soil":{"skin":9,"d2":10,"d4":10,"d8":11,"d20":12},"moisture":100,"region":"nplains"},"pos":3},
+    '2a':{"col":{"levels":{"eye":{"t":32,"p":1032,"ws":59,"wd":15},"l5":{"t":41,"p":845,"ws":63,"wd":225},"l10":{"t":31,"p":700,"ws":75,"wd":160},"l18":{"t":4,"p":500,"ws":84,"wd":185},"l30":{"t":-18,"p":300,"ws":194,"wd":345},"l40":{"t":-34,"p":200,"ws":162,"wd":225}},"soil":{"skin":-9,"d2":-8,"d4":-8,"d8":-7,"d20":-6},"moisture":100,"region":"ohval"},"pos":3},
+    '2b':{"col":{"levels":{"eye":{"t":62,"p":982,"ws":62,"wd":190},"l5":{"t":56,"p":845,"ws":27,"wd":150},"l10":{"t":35,"p":700,"ws":23,"wd":80},"l18":{"t":21,"p":500,"ws":130,"wd":330},"l30":{"t":12,"p":300,"ws":163,"wd":260},"l40":{"t":7,"p":200,"ws":61,"wd":135}},"soil":{"skin":62,"d2":63,"d4":63,"d8":64,"d20":65},"moisture":100,"region":"splains"},"pos":3},
+    '2c':{"col":{"levels":{"eye":{"t":32,"p":942,"ws":16,"wd":245},"l5":{"t":16,"p":845,"ws":51,"wd":220},"l10":{"t":-7,"p":700,"ws":63,"wd":155},"l18":{"t":-40,"p":500,"ws":120,"wd":230},"l30":{"t":-51,"p":300,"ws":149,"wd":160},"l40":{"t":-60,"p":200,"ws":71,"wd":270}},"soil":{"skin":66,"d2":67,"d4":67,"d8":68,"d20":69},"moisture":100,"region":"swdes"},"pos":3},
+    '3a':{"col":{"levels":{"eye":{"t":34,"p":959,"ws":9,"wd":165},"l5":{"t":11,"p":845,"ws":40,"wd":235},"l10":{"t":-12,"p":700,"ws":95,"wd":215},"l18":{"t":-36,"p":500,"ws":58,"wd":90},"l30":{"t":-60,"p":300,"ws":155,"wd":185},"l40":{"t":-60,"p":200,"ws":117,"wd":75}},"soil":{"skin":18,"d2":19,"d4":19,"d8":20,"d20":21},"moisture":100,"region":"nplains"},"pos":2},
+    '3b':{"col":{"levels":{"eye":{"t":100,"p":998,"ws":35,"wd":20},"l5":{"t":82,"p":845,"ws":11,"wd":45},"l10":{"t":77,"p":700,"ws":89,"wd":80},"l18":{"t":68,"p":500,"ws":128,"wd":320},"l30":{"t":53,"p":300,"ws":95,"wd":30},"l40":{"t":38,"p":200,"ws":192,"wd":300}},"soil":{"skin":-5,"d2":-4,"d4":-4,"d8":-3,"d20":-2},"moisture":100,"region":"gulf"},"pos":2},
+    '3c':{"col":{"levels":{"eye":{"t":87,"p":1015,"ws":19,"wd":165},"l5":{"t":66,"p":845,"ws":23,"wd":260},"l10":{"t":45,"p":700,"ws":38,"wd":330},"l18":{"t":10,"p":500,"ws":125,"wd":300},"l30":{"t":-10,"p":300,"ws":124,"wd":295},"l40":{"t":-16,"p":200,"ws":94,"wd":270}},"soil":{"skin":44,"d2":45,"d4":45,"d8":46,"d20":47},"moisture":100,"region":"se"},"pos":2},
+    '4a':{"col":{"levels":{"eye":{"t":20,"p":951,"ws":53,"wd":305},"l5":{"t":-5,"p":845,"ws":54,"wd":110},"l10":{"t":-27,"p":700,"ws":76,"wd":290},"l18":{"t":-44,"p":500,"ws":56,"wd":95},"l30":{"t":-60,"p":300,"ws":169,"wd":230},"l40":{"t":-60,"p":200,"ws":187,"wd":130}},"soil":{"skin":11,"d2":12,"d4":12,"d8":13,"d20":14},"moisture":100,"region":"ne"},"pos":-1},
+    '4b':{"col":{"levels":{"eye":{"t":32,"p":952,"ws":25,"wd":320},"l5":{"t":36,"p":845,"ws":35,"wd":185},"l10":{"t":26,"p":700,"ws":84,"wd":320},"l18":{"t":-6,"p":500,"ws":138,"wd":115},"l30":{"t":-29,"p":300,"ws":82,"wd":75},"l40":{"t":-37,"p":200,"ws":195,"wd":355}},"soil":{"skin":16,"d2":17,"d4":17,"d8":18,"d20":19},"moisture":100,"region":"matl"},"pos":2},
+    '4c':{"col":{"levels":{"eye":{"t":31,"p":940,"ws":25,"wd":100},"l5":{"t":5,"p":845,"ws":40,"wd":345},"l10":{"t":-5,"p":700,"ws":66,"wd":55},"l18":{"t":-25,"p":500,"ws":140,"wd":40},"l30":{"t":-50,"p":300,"ws":151,"wd":0},"l40":{"t":-60,"p":200,"ws":146,"wd":240}},"soil":{"skin":48,"d2":49,"d4":49,"d8":50,"d20":51},"moisture":74,"region":"cawest"},"pos":0},
+    '5a':{"col":{"levels":{"eye":{"t":35,"p":945,"ws":55,"wd":195},"l5":{"t":14,"p":845,"ws":39,"wd":35},"l10":{"t":-9,"p":700,"ws":75,"wd":40},"l18":{"t":-44,"p":500,"ws":117,"wd":45},"l30":{"t":-60,"p":300,"ws":159,"wd":95},"l40":{"t":-60,"p":200,"ws":49,"wd":100}},"soil":{"skin":16,"d2":17,"d4":17,"d8":18,"d20":19},"moisture":100,"region":"splains"},"pos":1},
+    '5b':{"col":{"levels":{"eye":{"t":24,"p":972,"ws":43,"wd":330},"l5":{"t":0,"p":845,"ws":29,"wd":110},"l10":{"t":-4,"p":700,"ws":92,"wd":275},"l18":{"t":-39,"p":500,"ws":97,"wd":65},"l30":{"t":-60,"p":300,"ws":168,"wd":10},"l40":{"t":-60,"p":200,"ws":42,"wd":40}},"soil":{"skin":15,"d2":16,"d4":16,"d8":17,"d20":18},"moisture":100,"region":"glakes"},"pos":0},
+    '5c':{"col":{"levels":{"eye":{"t":69,"p":1003,"ws":27,"wd":90},"l5":{"t":67,"p":845,"ws":33,"wd":310},"l10":{"t":60,"p":700,"ws":25,"wd":230},"l18":{"t":52,"p":500,"ws":80,"wd":235},"l30":{"t":28,"p":300,"ws":162,"wd":275},"l40":{"t":22,"p":200,"ws":139,"wd":200}},"soil":{"skin":23,"d2":24,"d4":24,"d8":25,"d20":26},"moisture":100,"region":"splains"},"pos":0}
+  };
+  const L=BOB.CHALLENGE_LEVELS;
+  const goals=L.reduce((a,l)=>a.concat(l.goals),[]);
+  const clone=(o)=>JSON.parse(JSON.stringify(o));
+  const simFor=(id,boost)=>BOB.simulate(Object.assign(clone(SOL[id].col),{boost}));
+  t('five levels of three goals', L.length===5 && L.every((l,i)=>l.level===i+1 && l.goals.length===3));
+  t('goal ids are unique', new Set(goals.map(g=>g.id)).size===15);
+  t('every goal names an unlocked region, real event types, a tier on their scale and a dial stop',
+     goals.every(g=>{ const r=BOB.REGIONS.find(r=>r.key===g.region);
+       return r && !r.locked && g.types.length>0 &&
+         g.types.every(ty=>BOB.EVENT_TYPES.includes(ty) && BOB.tierRank(ty,g.tier)>=0) &&
+         BOB.SLIDER_STOPS.some(s=>s.pos===g.maxPos); }));
+  t('boost is 10% per level beaten',
+     BOB.boostFor(0)===1 && approx(BOB.boostFor(1),1.1,1e-9) && approx(BOB.boostFor(5),1.5,1e-9));
+  const ids=n=>goals.slice(0,n).map(g=>g.id);
+  t('fresh challenge is level 1', BOB.challengeLevel([])===1);
+  t('two of three goals is still level 1', BOB.challengeLevel(ids(2))===1);
+  t('three goals done is level 2', BOB.challengeLevel(ids(3))===2);
+  t('a later-level goal cannot skip a level', BOB.challengeLevel([goals[14].id])===1);
+  t('all fifteen done is level 6: complete', BOB.challengeLevel(ids(15))===6);
+
+  t('every goal is winnable at its own level boost', L.every(l=>l.goals.every(g=>{
+     const s=SOL[g.id]; return !!s && BOB.goalCheck(g, simFor(g.id, BOB.boostFor(l.level-1)), s.pos).met; })));
+  t('every Level 5 goal needs the boost',
+     L[4].goals.every(g=>!BOB.goalCheck(g, simFor(g.id,1), SOL[g.id].pos).met));
+  const g5b=goals.find(g=>g.id==='5b'), s5=simFor('5b',1.4);
+  t('goal check reports each part', (function(){ const c=BOB.goalCheck(g5b,s5,0);
+     return c.region && c.type && c.tier && c.dial && c.met; })());
+  t('dialing past the goal stop fails only the dial part', (function(){ const c=BOB.goalCheck(g5b,s5,1);
+     return c.region && c.type && c.tier && !c.dial && !c.met; })());
+  t('wrong region fails the region part', (function(){
+     const c=BOB.goalCheck(g5b, BOB.simulate(Object.assign(clone(SOL['5b'].col),{boost:1.4,region:'umidw'})), 0);
+     return !c.region && !c.met; })());
+
+  // progression mutates BOB.challenge: run on a scratch state and put the real one back
+  const saved=clone(BOB.challenge);
+  try {
+    BOB.challenge={on:false, done:[]};
+    t('boost is off in the sandbox', BOB.activeBoost()===1);
+    t('nothing counts in the sandbox', BOB.challengeEvaluate(simFor('1a',1),SOL['1a'].pos).completed.length===0);
+    BOB.challenge.on=true;
+    t('level 1 starts with no boost', BOB.activeBoost()===1);
+    t('Continental is hidden until the challenge is beaten', BOB.regionsAvailable().length===14 &&
+       !BOB.regionsAvailable().some(r=>r.key==='continental'));
+    let out=BOB.challengeEvaluate(simFor('5b',1.4),0);
+    t('a later-level storm does not count early', out.completed.length===0 && BOB.challenge.done.length===0);
+    L[0].goals.forEach(g=>{ out=BOB.challengeEvaluate(simFor(g.id,BOB.activeBoost()), SOL[g.id].pos); });
+    t('beating all three goals levels up', out.leveledUp===true && out.unlocked===false &&
+       BOB.challengeLevel(BOB.challenge.done)===2);
+    t('leveling up raises the boost', approx(BOB.activeBoost(),1.1,1e-9));
+    t('a finished goal is not completed twice',
+       BOB.challengeEvaluate(simFor('1a',1),SOL['1a'].pos).completed.length===0 && BOB.challenge.done.length===3);
+    for (let lv=2; lv<=5; lv++) L[lv-1].goals.forEach(g=>{
+      out=BOB.challengeEvaluate(simFor(g.id,BOB.activeBoost()), SOL[g.id].pos); });
+    t('the challenge can be played through to the end', BOB.challengeLevel(BOB.challenge.done)===6);
+    t('beating Level 5 unlocks Continental', out.unlocked===true && BOB.regionsAvailable().length===15 &&
+       BOB.regionsAvailable().some(r=>r.key==='continental'));
+    t('champion boost is 1.5', approx(BOB.activeBoost(),1.5,1e-9));
+    BOB.challenge.on=false;
+    t('Continental stays unlocked in the sandbox, without the boost',
+       BOB.regionsAvailable().length===15 && BOB.activeBoost()===1);
+    BOB.challengeReset();
+    t('reset clears progress and re-locks Continental',
+       BOB.challenge.done.length===0 && BOB.regionsAvailable().length===14);
+  } finally { BOB.challenge=saved; }
+});
+
+/* ================= CHALLENGE MODE ================= */
+// Five levels, three goals each. A goal is a specific event over a specific region, at or
+// above a tier, with the outcome dial at or below `maxPos` (3 = any stop). Later levels pin
+// the dial lower, so the storm has to be built, not just dialed up — and from Level 4 on some
+// goals are out of reach without the level boost.
+BOB.CHALLENGE_LEVELS = [
+  {level:1, goals:[
+    {id:'1a', types:['snowstorm','blizzard'], region:'umidw',   tier:'Notable',      maxPos:3},
+    {id:'1b', types:['rainflood'],            region:'pnw',     tier:'Soaking',      maxPos:3},
+    {id:'1c', types:['coldoutbreak'],         region:'nplains', tier:'Hard Freeze',  maxPos:3}]},
+  {level:2, goals:[
+    {id:'2a', types:['icestorm'],             region:'ohval',   tier:'Damaging',     maxPos:3},
+    {id:'2b', types:['severe'],               region:'splains', tier:'EF2',          maxPos:3},
+    {id:'2c', types:['highwind'],             region:'swdes',   tier:'Damaging',     maxPos:3}]},
+  {level:3, goals:[
+    {id:'3a', types:['blizzard'],             region:'nplains', tier:'Crippling',    maxPos:2},
+    {id:'3b', types:['rainflood'],            region:'gulf',    tier:'Flooding',     maxPos:2},
+    {id:'3c', types:['severe'],               region:'se',      tier:'EF4',          maxPos:2}]},
+  {level:4, goals:[
+    {id:'4a', types:['snowstorm','blizzard'], region:'ne',      tier:'Crippling',    maxPos:-1},
+    {id:'4b', types:['icestorm'],             region:'matl',    tier:'Catastrophic', maxPos:2},
+    {id:'4c', types:['highwind'],             region:'cawest',  tier:'Extreme',      maxPos:0}]},
+  {level:5, goals:[
+    {id:'5a', types:['snowstorm','blizzard'], region:'splains', tier:'Historic',     maxPos:1},
+    {id:'5b', types:['snowstorm','blizzard'], region:'glakes',  tier:'Historic',     maxPos:0},
+    {id:'5c', types:['severe'],               region:'splains', tier:'EF5',          maxPos:0}]},
+];
+// The boost: every level beaten makes every storm you build 10% stronger (col.boost).
+BOB.LEVEL_BOOST_STEP = 0.1;
+BOB.boostFor = function(levelsBeaten){ return 1 + BOB.LEVEL_BOOST_STEP*levelsBeaten; };
+// Current level from the list of finished goal ids: the first level with a goal still open,
+// or one past the last level when everything is done. Levels cannot be skipped.
+BOB.challengeLevel = function(done){
+  for (const l of BOB.CHALLENGE_LEVELS){
+    if (!l.goals.every(g=>done.indexOf(g.id)>=0)) return l.level;
+  }
+  return BOB.CHALLENGE_LEVELS.length + 1;
+};
+// Does this simulated storm, at this dial stop, satisfy the goal? Reports each part so the
+// UI can show what is still missing.
+BOB.goalCheck = function(goal, sim, sliderPos){
+  const res = BOB.resolve(sim.fc, sim.diag, sliderPos);
+  const sev = BOB.severityFor(sim.fc.type, res.actual, sim.col.region);
+  const region = sim.col.region === goal.region;
+  const type = goal.types.indexOf(sim.fc.type) >= 0;
+  const tier = type && BOB.tierRank(sim.fc.type, sev.tier) >= BOB.tierRank(sim.fc.type, goal.tier);
+  const dial = sliderPos <= goal.maxPos;
+  return { region, type, tier, dial, met: region && type && tier && dial };
+};
+
+// Progress. Persisted across visits; the self-test always starts fresh and never writes.
+BOB.CHALLENGE_KEY = 'bob.challenge';
+BOB._selftest = /(\?|&)selftest\b/.test(location.search);
+BOB.challenge = (function(){
+  const fresh = {on:false, done:[]};
+  if (BOB._selftest) return fresh;
+  try {
+    const o = JSON.parse(localStorage.getItem(BOB.CHALLENGE_KEY) || 'null');
+    if (o && Array.isArray(o.done)) return {on:!!o.on, done:o.done.filter(x=>typeof x==='string')};
+  } catch(e){}
+  return fresh;
+})();
+BOB._saveChallenge = function(){
+  if (BOB._selftest) return;
+  try { localStorage.setItem(BOB.CHALLENGE_KEY, JSON.stringify(BOB.challenge)); } catch(e){}
+};
+BOB.challengeComplete = function(){
+  return BOB.challengeLevel(BOB.challenge.done) > BOB.CHALLENGE_LEVELS.length;
+};
+// The boost applies only while Challenge Mode is on; the sandbox stays the plain engine.
+BOB.activeBoost = function(){
+  return BOB.challenge.on ? BOB.boostFor(BOB.challengeLevel(BOB.challenge.done) - 1) : 1;
+};
+// Regions on offer: locked ones (Continental) appear once the challenge is beaten, in both modes.
+BOB.regionsAvailable = function(){
+  const open = BOB.challengeComplete();
+  return BOB.REGIONS.filter(r=>!r.locked || open);
+};
+// Score the current storm against the current level's open goals.
+BOB.challengeEvaluate = function(sim, sliderPos){
+  const out = {completed:[], leveledUp:false, unlocked:false};
+  if (!BOB.challenge.on) return out;
+  const before = BOB.challengeLevel(BOB.challenge.done);
+  const lvl = BOB.CHALLENGE_LEVELS[before-1];
+  if (!lvl) return out;
+  lvl.goals.forEach(g=>{
+    if (BOB.challenge.done.indexOf(g.id) < 0 && BOB.goalCheck(g, sim, sliderPos).met){
+      BOB.challenge.done.push(g.id); out.completed.push(g.id);
+    }
+  });
+  if (out.completed.length){
+    const after = BOB.challengeLevel(BOB.challenge.done);
+    out.leveledUp = after > before;
+    out.unlocked = after > BOB.CHALLENGE_LEVELS.length;
+    BOB._saveChallenge();
+  }
+  return out;
+};
+BOB.challengeReset = function(){
+  BOB.challenge.done = [];
+  BOB._saveChallenge();
+};
+
 /* ================= MAP (Task 11) ================= */
 window.__bobTests.push((t) => {
   const svg = BOB.renderMap('splains', 'severe');
   t('map returns svg string', typeof svg==='string' && svg.indexOf('<svg')===0);
   t('map marks selected region', svg.indexOf('data-region="splains"')>=0);
-  t('map has 14 region nodes', (svg.match(/data-region=/g)||[]).length===14);
+  t('map has 14 region nodes while Continental is locked', (svg.match(/data-region=/g)||[]).length===14);
 });
 
 BOB.TYPE_COLORS = {snowstorm:'--snow', blizzard:'--snow', icestorm:'--ice',
@@ -861,7 +1164,9 @@ BOB.renderMap = function(regionKey, dominantType){
     + 'C980,240 900,300 860,340 C820,380 840,460 760,500 C640,540 520,520 440,500 '
     + 'C360,480 300,460 240,420 C160,380 120,320 100,260 C88,210 90,150 120,120 Z';
   let nodes='';
-  BOB.REGIONS.forEach(r=>{
+  const selected = BOB.REGIONS.find(r=>r.key===regionKey);
+  const mega = !!(selected && selected.mega);   // Continental: the footprint is the whole map
+  BOB.regionsAvailable().forEach(r=>{
     const sel = r.key===regionKey;
     const fill = sel ? hi : '#1b3a5b';
     const rad = sel ? 15 : 8;
@@ -871,7 +1176,7 @@ BOB.renderMap = function(regionKey, dominantType){
       + `</g>`;
   });
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width:640px">`
-    + `<path d="${outline}" fill="#0d2135" stroke="#2a4f74" stroke-width="2"/>`
+    + `<path d="${outline}" data-mega="${mega?1:0}" fill="#0d2135" stroke="${mega?hi:'#2a4f74'}" stroke-width="${mega?5:2}"/>`
     + nodes + `</svg>`;
 };
 
@@ -919,12 +1224,36 @@ BOB.YOOPER = {
   // severity tiers
   'Nuisance':'Just a Skiff', 'Minor':'No Big Deal', 'Notable':'Now Yer Talkin’',
   'Major':'Holy Wah', 'Crippling':'Stuck at Camp', 'Historic':'Heikki Lunta Himself',
+  'Megastorm':'Da Whole Continent, Holy Wah',
   'Glaze':'Bit Slippy', 'Damaging':'Trees Comin’ Down', 'Catastrophic':'Cripes, Everyting',
   'Light':'Sprinkle', 'Soaking':'Soaker', 'Heavy':'Real Downpour', 'Flooding':'Da Crick’s Up',
   'Breezy':'Bit Breezy', 'Windy':'Windy, Eh', 'High Wind':'Real Blowy', 'Extreme':'Gales o’ November',
   'Chilly':'Sweater Weather', 'Cold':'Chilly', 'Hard Freeze':'Cold Enough', 'Arctic':'Real Cold Now',
   'Life-threatening':'Dangerous Cold, Stay Inside',
+  // challenge mode
+  '🏆 Challenge Mode':'🏆 Da Challenge',
+  '🧪 Sandbox':'🧪 Just Messin’ Around',
+  'Boost':'Extra oomph',
+  'Build each storm below to level up. Every level you beat makes your storms 10% stronger.':
+    'Build each o’ dese storms ta level up, eh. Every level ya beat makes yer storms 10% stronger.',
+  'region':'where at', 'storm':'what kinda ting', 'tier':'how bad', 'dial':'da dial',
+  'Goal complete!':'Got one, eh!',
+  'Level up! Your boost is now':'Holy wah, ya leveled up! Yer extra oomph’s now',
+  'Level 5 beaten! Continental is unlocked.':'Ya beat Level 5, holy wah! Continental’s unlocked.',
+  'All five levels beaten.':'Ya beat all five levels, eh.',
+  'Continental is unlocked: pick it under Region and build a megastorm.':
+    'Continental’s unlocked: pick ’er under Where at an’ build a megastorm.',
+  'Restart challenge':'Start da challenge over',
+  'Really restart? Click again.':'Ya sure? Click ’er again.',
 };
+// Every English string the challenge UI passes through BOB.L (the self-test checks each has
+// a Yooper label).
+BOB.CHALLENGE_STRINGS = ['🏆 Challenge Mode','🧪 Sandbox','Boost',
+  'Build each storm below to level up. Every level you beat makes your storms 10% stronger.',
+  'region','storm','tier','dial','Goal complete!','Level up! Your boost is now',
+  'Level 5 beaten! Continental is unlocked.','All five levels beaten.',
+  'Continental is unlocked: pick it under Region and build a megastorm.',
+  'Restart challenge','Really restart? Click again.'];
 // Tier words collide across scales ("Minor", "Crippling", "Catastrophic"), so the scale picks
 // the reading: an ice-storm "Crippling" means the power is out, a snowstorm one means camp.
 BOB.YOOPER_BY_SCALE = {
@@ -944,7 +1273,7 @@ BOB.YOOPER_TYPE = {snowstorm:'snowstorm', blizzard:'real blizzard', icestorm:'ic
   rainflood:'soaker', severe:'bunch o’ nasty thunderstorms', highwind:'real windy spell',
   coldoutbreak:'cold snap'};
 BOB.narrativeYooper = function(col, diag, cls, fc, res){
-  const region = (BOB.REGIONS.find(r=>r.key===col.region)||{name:'da region'}).name;
+  const region = BOB._placeName(col.region, 'da region');
   const label = BOB.YOOPER_TYPE[cls.dominant] || 'ting';
   const isTemp = fc.unit==='°F';
   const dir = res.stop.pos<0 ? (isTemp?'busted warmer':'busted')
@@ -958,7 +1287,8 @@ BOB.narrativeYooper = function(col, diag, cls, fc, res){
     + `${fc.value}${isTemp?'°F':' '+fc.unit} (${BOB.L(fc.label).toLowerCase()}), mostly ${pt}. `;
   s += `Ya cranked ’er ta ${BOB.L(res.stop.label)} — da ting ${dir}, ${res.actual}${isTemp?'°F':' '+fc.unit} `
     + `(${deltaTxt}). `;
-  const boosts = BOB._snowBoosts(diag, fc);
+  const boosts = BOB._boostNotes(col, diag, fc);
+  if (boosts.mega) s += `Dat was a megastorm — da whole continent was feedin’ ’er, holy wah. `;
   if (boosts.dynamics) s += `Dat storm had some real muscle — deep low, screamin’ jet, steep lapse rates — an’ she kept feedin’ da column, so da snow piled right up. `;
   if (boosts.lake) s += `Cold air comin’ across da open lakes piled lake-effect snow on top o’ dat, holy wah. `;
   if (cls.secondary) s += `Dere was a ${BOB.YOOPER_TYPE[cls.secondary]} lurkin’ in dere too, ya know. `;
@@ -979,6 +1309,8 @@ BOB._applyChrome = function(){
   if (s) s.textContent = BOB.L('engineer a column · issue a forecast · dial the outcome');
   const b = document.getElementById('langToggle');
   if (b) b.textContent = BOB.lang==='yooper' ? '🗣️ English' : '🗣️ Yoopanese';
+  const c = document.getElementById('challengeToggle');
+  if (c) c.textContent = BOB.L(BOB.challenge.on ? '🧪 Sandbox' : '🏆 Challenge Mode');
 };
 
 // The narrative says why a snow forecast ran past one column's worth: storm dynamics, lake
@@ -1027,7 +1359,7 @@ BOB.buildInputs = function(){
       +`<input data-soil="${s.key}" type="number" min="${R.soil.min}" max="${R.soil.max}" value="${val}" `
       +`style="width:56px;background:var(--panel2);color:var(--ink);border:1px solid var(--edge);border-radius:4px;padding:3px"></label>`;
   }).join('');
-  const regionOpts = BOB.REGIONS.map(r=>`<option value="${r.key}" ${r.key===BOB.state.region?'selected':''}>${r.name}</option>`).join('');
+  const regionOpts = BOB.regionsAvailable().map(r=>`<option value="${r.key}" ${r.key===BOB.state.region?'selected':''}>${r.name}</option>`).join('');
   return `
     <h2 class="sec">${BOB.L('Atmospheric column')}</h2>
     <table style="border-collapse:collapse;font-size:12px">
@@ -1069,7 +1401,7 @@ BOB.randomColumn = function(){
   BOB.LEVELS.forEach((l,i)=>{ if(i>0){ t-=rnd(6,22); p-=rnd(120,200);} lvls[l.key]={t:Math.round(t),p:Math.round(p),ws:Math.round(rnd(5,40)+i*rnd(3,14)),wd:Math.round(rnd(140,300))}; });
   const soilBase=sfc+rnd(-4,8);
   return { levels:lvls, soil:{skin:Math.round(soilBase),d2:Math.round(soilBase+2),d4:Math.round(soilBase+4),d8:Math.round(soilBase+6),d20:Math.round(soilBase+9)},
-           moisture:Math.round(rnd(0,100)), region:BOB.REGIONS[Math.floor(Math.random()*BOB.REGIONS.length)].key };
+           moisture:Math.round(rnd(0,100)), region:(function(){ const rs=BOB.regionsAvailable(); return rs[Math.floor(Math.random()*rs.length)].key; })() };
 };
 
 window.__bobTests.push((t) => {
@@ -1121,25 +1453,120 @@ BOB.renderReport = function(sim, sliderPos){
         : ''; })()}`;
 };
 
+// One goal as a sentence: the storm, the region, the tier to reach and (if any) the dial limit.
+BOB.goalText = function(goal){
+  const yoop = BOB.lang==='yooper';
+  const region = BOB.REGIONS.find(r=>r.key===goal.region).name;
+  const tier = BOB.LT(BOB.severityFor(goal.types[0], 0, goal.region).scale, goal.tier);
+  const labels = yoop ? BOB.YOOPER_TYPE : BOB.TYPE_LABELS;
+  const type = goal.types.map(k=>labels[k]).join(' or ');
+  const stop = BOB.SLIDER_STOPS.find(s=>s.pos===goal.maxPos);
+  const dial = goal.maxPos>=3 ? ''
+    : yoop ? `, an’ don’t crank ’er past ${BOB.L(stop.label)}` : `, without dialing past ${stop.label}`;
+  return type.charAt(0).toUpperCase() + type.slice(1)
+    + (yoop ? ' over da ' : ' over the ') + region + ' — ' + tier + ' or worse' + dial;
+};
+// The Challenge Mode panel (empty string in the sandbox). `flash` is the result of the last
+// challengeEvaluate that completed something, or null.
+BOB.renderChallenge = function(sim, sliderPos, flash){
+  if (!BOB.challenge.on) return '';
+  const yoop = BOB.lang==='yooper';
+  const total = BOB.CHALLENGE_LEVELS.length;
+  const level = BOB.challengeLevel(BOB.challenge.done);
+  const boost = '×' + BOB.activeBoost().toFixed(1);
+  const box = 'border:1px solid var(--edge);border-radius:8px;padding:10px 12px;margin-bottom:4px;background:var(--panel)';
+  const flashMsg = !flash ? ''
+    : flash.unlocked ? BOB.L('Level 5 beaten! Continental is unlocked.')
+    : flash.leveledUp ? `${BOB.L('Level up! Your boost is now')} ${boost}.`
+    : BOB.L('Goal complete!');
+  const flashHtml = flashMsg
+    ? `<div id="challengeFlash" style="margin:6px 0;padding:6px 10px;border-radius:6px;background:var(--panel2);color:var(--bull);font-weight:700">🎉 ${flashMsg}</div>` : '';
+  const head = (title)=>`<div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap">`
+    + `<div style="font-weight:700;color:#e2e8f0">🏆 ${title}</div>`
+    + `<div style="color:var(--ink2);font-size:12px">${BOB.L('Boost')} ${boost}</div></div>`;
+  const restart = `<div style="margin-top:8px"><button id="challengeReset" style="font-size:12px;padding:4px 9px">${BOB.L('Restart challenge')}</button></div>`;
+  if (level > total){
+    return `<div id="challenge" style="${box}">${head(BOB.L('All five levels beaten.'))}${flashHtml}`
+      + `<div style="margin-top:6px">${BOB.L('Continental is unlocked: pick it under Region and build a megastorm.')}</div>`
+      + restart + `</div>`;
+  }
+  const goals = BOB.CHALLENGE_LEVELS[level-1].goals.map(g=>{
+    const done = BOB.challenge.done.indexOf(g.id) >= 0;
+    const chk = BOB.goalCheck(g, sim, sliderPos);
+    const part = (key)=>`<span data-part="${key}" style="color:${chk[key]?'var(--bull)':'var(--ink2)'}">${chk[key]?'✓':'·'} ${BOB.L(key==='type'?'storm':key)}</span>`;
+    const parts = done ? '' : `<div style="font-size:11px;display:flex;gap:12px;margin:1px 0 0 24px">${['region','type','tier','dial'].map(part).join('')}</div>`;
+    return `<div data-goal="${g.id}" data-done="${done?1:0}" style="margin:6px 0">`
+      + `<div style="${done?'color:var(--ink2);text-decoration:line-through':''}">${done?'✅':'⬜'} ${BOB.goalText(g)}</div>${parts}</div>`;
+  }).join('');
+  return `<div id="challenge" style="${box}">`
+    + head(yoop ? `Level ${level} outta ${total}` : `Level ${level} of ${total}`) + flashHtml
+    + `<div style="color:var(--ink2);font-size:12px;margin:4px 0 6px">${BOB.L('Build each storm below to level up. Every level you beat makes your storms 10% stronger.')}</div>`
+    + goals + restart + `</div>`;
+};
+
 BOB.sliderPos = 0;
+BOB._flash = null;
+// Simulate the live state: apply the level boost, and never sit on a region that is locked.
+BOB._sim = function(){
+  if (!BOB.regionsAvailable().some(r=>r.key===BOB.state.region)) BOB.state.region = BOB.DEFAULT_COLUMN.region;
+  BOB.state.boost = BOB.activeBoost();
+  return BOB.simulate(BOB.state);
+};
+// Simulate and score the storm against the challenge. A level-up changes the boost, so the
+// storm is re-simulated (and re-scored against the next level) until nothing more completes.
+// `changed` means the level moved, so the inputs need rebuilding too (a new region may exist).
+BOB._play = function(){
+  let sim = BOB._sim(), changed = false;
+  BOB._flash = null;
+  for (let i=0; i<=BOB.CHALLENGE_LEVELS.length; i++){
+    const out = BOB.challengeEvaluate(sim, BOB.sliderPos);
+    if (!out.completed.length) break;
+    BOB._flash = { completed:(BOB._flash?BOB._flash.completed:[]).concat(out.completed),
+                   leveledUp:out.leveledUp || !!(BOB._flash&&BOB._flash.leveledUp), unlocked:out.unlocked };
+    if (!out.leveledUp) break;
+    changed = true; sim = BOB._sim();
+  }
+  return { sim, changed };
+};
+BOB._resultsHtml = function(sim){
+  return BOB.renderChallenge(sim, BOB.sliderPos, BOB._flash) + BOB.renderReport(sim, BOB.sliderPos);
+};
 BOB.render = function(){
   const inputs=document.getElementById('inputs');
   const results=document.getElementById('results');
+  const sim = BOB._play().sim;
   BOB._applyChrome();
   inputs.innerHTML = BOB.buildInputs();
-  const sim = BOB.simulate(BOB.state);
-  results.innerHTML = BOB.renderReport(sim, BOB.sliderPos);
+  results.innerHTML = BOB._resultsHtml(sim);
   BOB._wire();
+};
+// Results only (moisture and dial drags keep the inputs as they are) — unless the level moved.
+BOB._renderResults = function(){
+  const played = BOB._play();
+  if (played.changed) document.getElementById('inputs').innerHTML = BOB.buildInputs();
+  document.getElementById('results').innerHTML = BOB._resultsHtml(played.sim);
+  BOB._wire();
+};
+BOB.setChallenge = function(on){
+  BOB.challenge.on = !!on;
+  BOB._saveChallenge();
+  BOB.render();
 };
 BOB._recompute = function(){ BOB.readInputs(); BOB.render(); };
 BOB._wire = function(){
   document.querySelectorAll('input[data-lvl],input[data-soil]').forEach(i=>i.addEventListener('change', BOB._recompute));
-  const m=document.getElementById('moisture'); if(m) m.addEventListener('input', ()=>{ document.getElementById('moistval').textContent=m.value; BOB.readInputs(); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
+  const m=document.getElementById('moisture'); if(m) m.addEventListener('input', ()=>{ document.getElementById('moistval').textContent=m.value; BOB.readInputs(); BOB._renderResults(); });
   const rg=document.getElementById('region'); if(rg) rg.addEventListener('change', BOB._recompute);
-  const sl=document.getElementById('slider'); if(sl) sl.addEventListener('input', ()=>{ BOB.sliderPos=parseInt(sl.value,10); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
-  const ss=document.getElementById('sliderSel'); if(ss) ss.addEventListener('change', ()=>{ BOB.sliderPos=parseInt(ss.value,10); const sim=BOB.simulate(BOB.state); document.getElementById('results').innerHTML=BOB.renderReport(sim,BOB.sliderPos); BOB._wire(); });
+  const sl=document.getElementById('slider'); if(sl) sl.addEventListener('input', ()=>{ BOB.sliderPos=parseInt(sl.value,10); BOB._renderResults(); });
+  const ss=document.getElementById('sliderSel'); if(ss) ss.addEventListener('change', ()=>{ BOB.sliderPos=parseInt(ss.value,10); BOB._renderResults(); });
   const rnd=document.getElementById('randomize'); if(rnd) rnd.addEventListener('click', ()=>{ BOB.state=BOB.randomColumn(); BOB.render(); });
   const lt=document.getElementById('langToggle'); if(lt) lt.onclick = ()=>BOB.setLang(BOB.lang==='yooper'?'en':'yooper');
+  const ct=document.getElementById('challengeToggle'); if(ct) ct.onclick = ()=>BOB.setChallenge(!BOB.challenge.on);
+  // restart asks twice: the first click only re-labels the button (any re-render un-arms it)
+  const cr=document.getElementById('challengeReset'); if(cr) cr.addEventListener('click', ()=>{
+    if (cr.getAttribute('data-armed')==='1'){ BOB.challengeReset(); BOB.render(); }
+    else { cr.setAttribute('data-armed','1'); cr.textContent=BOB.L('Really restart? Click again.'); }
+  });
   const rst=document.getElementById('reset'); if(rst) rst.addEventListener('click', ()=>{ BOB.state=JSON.parse(JSON.stringify(BOB.DEFAULT_COLUMN)); BOB.sliderPos=0; BOB.render(); });
 };
 // boot (skip when running selftest)
@@ -1174,6 +1601,95 @@ window.__bobTests.push((t) => {
   t('same numbers in both languages', nums(strip(en))===nums(strip(yp)));
   t('every slider stop has a yooper label', BOB.SLIDER_STOPS.every(s=>Object.prototype.hasOwnProperty.call(BOB.YOOPER,s.label)));
   t('back to English after the test', /Official forecast/.test(BOB.renderReport(sim,0)));
+});
+
+// Challenge Mode on screen: the panel, the goal wording in both languages, the hidden 15th
+// region, and the glue that applies the boost.
+window.__bobTests.push((t, approx) => {
+  const clone=(o)=>JSON.parse(JSON.stringify(o));
+  const has=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+  const goals=BOB.CHALLENGE_LEVELS.reduce((a,l)=>a.concat(l.goals),[]);
+  const goal=id=>goals.find(g=>g.id===id);
+  const nodes=svg=>(svg.match(/data-region=/g)||[]).length;
+  const saved=clone(BOB.challenge), savedState=BOB.state, savedPos=BOB.sliderPos;
+  try {
+    const sim=BOB.simulate(BOB.DEFAULT_COLUMN);
+    BOB.challenge={on:false, done:[]};
+    t('no challenge panel in the sandbox', BOB.renderChallenge(sim,0,null)==='');
+    BOB.challenge.on=true;
+    let html=BOB.renderChallenge(sim,0,null);
+    t('panel shows the level and the boost', /Level 1 of 5/.test(html) && /×1\.0/.test(html));
+    t('panel lists the three goals of the level', (html.match(/data-goal=/g)||[]).length===3 &&
+       html.indexOf(BOB.goalText(goal('1a')))>=0 && html.indexOf(BOB.goalText(goal('2a')))<0);
+    t('goal text names the storm, the region and the tier',
+       BOB.goalText(goal('1a'))==='Snowstorm or blizzard over the Upper Midwest — Notable or worse');
+    t('goal text names the dial limit only when there is one',
+       /without dialing past Bullseye$/.test(BOB.goalText(goal('5b'))) && !/dialing/.test(BOB.goalText(goal('1a'))));
+    t('panel shows which parts of a goal the current storm meets', /data-part="region"/.test(html) && /data-part="tier"/.test(html));
+    t('level-up flash names the new boost',
+       /Level up/.test(BOB.renderChallenge(sim,0,{completed:['1a'],leveledUp:true,unlocked:false})));
+
+    // the 15th region stays out of sight until it is earned
+    t('region select hides Continental while locked', BOB.buildInputs().indexOf('value="continental"')<0);
+    t('map draws 14 nodes while locked', nodes(BOB.renderMap('splains','severe'))===14);
+    t('random column never lands on a locked region', (function(){
+       for (let i=0;i<300;i++) if (BOB.randomColumn().region==='continental') return false; return true; })());
+    BOB.state=clone(BOB.DEFAULT_COLUMN); BOB.state.region='continental';
+    t('a locked region in the state falls back to the default', BOB._sim().col.region===BOB.DEFAULT_COLUMN.region);
+
+    // the boost reaches the engine through the state
+    BOB.state=clone(BOB.DEFAULT_COLUMN);
+    BOB.challenge.done=goals.slice(0,3).map(g=>g.id);
+    t('the live simulation carries the level boost', approx(BOB._sim().col.boost,1.1,1e-9));
+    BOB.challenge.on=false;
+    t('the sandbox simulation carries no boost', BOB._sim().col.boost===1);
+    BOB.challenge.on=true;
+
+    // building a winning storm on the live state completes the goal and levels up
+    BOB.challenge.done=['1b','1c'];
+    BOB.state=clone(BOB.DEFAULT_COLUMN); BOB.state.levels.eye.t=22; BOB.state.soil.skin=25;
+    BOB.state.moisture=85; BOB.state.region='umidw'; BOB.sliderPos=3;
+    const played=BOB._play();
+    t('playing a winning storm completes the goal', BOB.challenge.done.indexOf('1a')>=0);
+    t('a level-up re-simulates with the new boost', played.changed===true && approx(played.sim.col.boost,1.1,1e-9));
+
+    // beaten
+    BOB.challenge.done=goals.map(g=>g.id);
+    html=BOB.renderChallenge(sim,0,null);
+    t('beaten challenge announces Continental and the champion boost',
+       /All five levels beaten/.test(html) && /Continental is unlocked/.test(html) && /×1\.5/.test(html));
+    t('region select offers Continental once unlocked', BOB.buildInputs().indexOf('value="continental"')>=0);
+    t('map draws 15 nodes once unlocked', nodes(BOB.renderMap('continental','blizzard'))===15);
+    t('map lights the whole outline for Continental',
+       /data-mega="1"/.test(BOB.renderMap('continental','blizzard')) && !/data-mega="1"/.test(BOB.renderMap('glakes','blizzard')));
+
+    // megastorm narrative
+    const mega={levels:{
+        eye:{t:28,p:968,ws:45,wd:20},  l5:{t:16,p:845,ws:60,wd:200}, l10:{t:-4,p:700,ws:80,wd:220},
+        l18:{t:-36,p:500,ws:110,wd:240}, l30:{t:-52,p:300,ws:160,wd:250}, l40:{t:-62,p:200,ws:150,wd:255}},
+      soil:{skin:18,d2:18,d4:18,d8:19,d20:20}, moisture:100, region:'continental'};
+    const tell=(c,yoop)=>{ const s=BOB.simulate(c), res=BOB.resolve(s.fc,s.diag,0);
+      return (yoop?BOB.narrativeYooper:BOB.narrative)(c,s.diag,s.cls,s.fc,res); };
+    t('narrative calls a Continental storm a megastorm', /megastorm/i.test(tell(mega)));
+    t('no megastorm sentence outside Continental', !/megastorm/i.test(tell(Object.assign(clone(mega),{region:'umidw'}))));
+    t('yooper narrative calls it a megastorm too', /megastorm/i.test(tell(mega,true)) && /da whole continent/.test(tell(mega,true)));
+    t('narrative places a Continental storm over the whole continent',
+       /^Over the whole continent,/.test(tell(mega)) && /^Over da whole continent,/.test(tell(mega,true)));
+
+    // Yoopanese
+    BOB.challenge.done=[];
+    BOB.lang='yooper';
+    try {
+      const yp=BOB.renderChallenge(sim,0,null);
+      t('yooper panel swaps the words', /Level 1 outta 5/.test(yp) && /Extra oomph/.test(yp) && !/Level 1 of 5/.test(yp));
+      t('yooper goal text uses the yooper tier and storm words',
+         BOB.goalText(goal('1a'))==='Snowstorm or real blizzard over da Upper Midwest — Now Yer Talkin’ or worse');
+      t('yooper goal text names the dial limit', /an’ don’t crank ’er past Right On Da Nose$/.test(BOB.goalText(goal('5b'))));
+      t('every challenge string has a yooper label', BOB.CHALLENGE_STRINGS.length>=10 &&
+         BOB.CHALLENGE_STRINGS.every(k=>has(BOB.YOOPER,k) && BOB.YOOPER[k]!==k));
+      t('Megastorm tier has a yooper label', BOB.LT('RSI-style','Megastorm')==='Da Whole Continent, Holy Wah');
+    } finally { BOB.lang='en'; }
+  } finally { BOB.challenge=saved; BOB.state=savedState; BOB.sliderPos=savedPos; }
 });
 
 /* ================= SELF-TEST HARNESS ================= */
